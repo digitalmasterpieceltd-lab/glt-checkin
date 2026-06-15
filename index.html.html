@@ -240,11 +240,6 @@ const db = {
 let C = {stewards:[],parents:[],children:[],sessions:[],classes:[],templates:[]};
 let syncSt='load', syncMsg='Connecting…';
 
-
-// Extend cache with churchSessions
-const _patchLoadChurchSessions = async(silent)=>{
-  try{
-    const cs=await sbQ('church_sessions?order=opened_at.desc&limit=100');
     C.churchSessions=cs;
   }catch(e){C.churchSessions=[];}
 };
@@ -257,9 +252,13 @@ async function loadAll(silent=false){
       sbQ('msg_templates?order=category,name').catch(()=>[])
     ]);
     const wasErr=syncSt==='err';
-    C={stewards:s,parents:p,children:c,sessions:se,classes:cl,templates:tp,churchSessions:[]};
-    await _patchLoadChurchSessions(silent);
-    await loadChurchSession();
+    const cs=await sbQ('church_sessions?order=opened_at.desc&limit=100').catch(()=>[]);
+    C={stewards:s,parents:p,children:c,sessions:se,classes:cl,templates:tp,churchSessions:cs};
+    // Load active church session
+    try{
+      const open=await sbQ('church_sessions?status=eq.open&order=opened_at.desc&limit=1');
+      activeChurchSession=open.length>0?open[0]:null;
+    }catch(e){activeChurchSession=null;}
     syncSt='ok'; syncMsg='Synced '+fmtTime(new Date());
     // Only re-render on silent refresh if there were actual changes or a previous error
     if(!silent||wasErr) render();
@@ -1057,11 +1056,7 @@ const dbSess = {
   list:  ()=> sbQ('church_sessions?order=opened_at.desc&limit=50'),
 };
 
-// Extend loadAll to also load church session
-const _origLoadAll = loadAll;
-async function loadAll(silent=false){
-  await Promise.all([_origLoadAll(silent), loadChurchSession()]);
-}
+
 
 /* ══════════════════════════════════════════════════════════
    SESSION MANAGER — inline card shown at top of check-in
@@ -1163,20 +1158,53 @@ async function doCloseSession(){
   }catch(e){ toast('Failed: '+e.message); }
 }
 
-/* ══════════════════════════════════════════════════════════
-   PATCH cfCI to attach church_session_id
-══════════════════════════════════════════════════════════ */
-const _origCfCI = cfCI;
 async function cfCI(cid){
   if(!activeChurchSession){
-    toast('No session open. Ask your Admin to open a session first.'); return;
+    toast('No session open. Ask your Admin to open a session first.');
+    return;
   }
-  // Temporarily patch the addSession call
-  const origAdd = db.addSession;
-  db.addSession = d => origAdd({...d, church_session_id: activeChurchSession.id});
-  await _origCfCI(cid);
-  db.addSession = origAdd;
+  S.saving=true; render();
+  try{
+    const bAll=[...S.belongings, S.belongOther||''].filter(Boolean).join(', ');
+    const code=genCode();
+    const rows=await db.addSession({
+      child_id:cid, code,
+      checkin_time:new Date().toISOString(),
+      checkout_time:null,
+      checkin_by:ME.id,
+      checkout_by:null,
+      belongings:bAll||null,
+      parent_absent:S.parentAbsent||false,
+      church_session_id:activeChurchSession.id
+    });
+    const sess=Array.isArray(rows)?rows[0]:rows;
+    C.sessions.unshift(sess);
+    S.saving=false;
+    S.modal={type:'ci',cid,step:'code',sid:sess.id};
+    render();
+  }catch(e){S.saving=false; toast('Check-in failed: '+e.message); render();}
 }
+
+async function doCO(){
+  const raw=S.coCode.trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!raw){toast('Please enter a pickup code');return;}
+  const sess=C.sessions.find(s=>{
+    if(!s.code||s.checkout_time)return false;
+    if(new Date(s.checkin_time).toDateString()!==today())return false;
+    const stored=s.code.replace(/[^A-Z0-9]/g,'');
+    return stored===raw||stored.replace(/^GLT/,'')===raw||raw===stored.replace(/^GLT/,'');
+  });
+  if(!sess){S.coResult={error:'Code not found. Check the code on the parent\'s slip and try again.'};render();return;}
+  S.saving=true; render();
+  try{
+    const t=new Date().toISOString();
+    await db.updSession(sess.id,{checkout_time:t,checkout_by:ME.id});
+    sess.checkout_time=t; sess.checkout_by=ME.id;
+    S.coResult={cid:sess.child_id,sid:sess.id};
+    S.coCode=''; S.saving=false; render();
+  }catch(e){S.saving=false; toast('Checkout failed: '+e.message); render();}
+}
+
 
 /* ══════════════════════════════════════════════════════════
    REBUILT DASHBOARD
