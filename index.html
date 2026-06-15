@@ -107,7 +107,8 @@ body{height:100%;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;backg
 .code-box{background:var(--gl);border:2px dashed var(--gm);border-radius:var(--r);padding:18px;text-align:center;margin:12px 0}
 .code-val{font-size:28px;font-weight:800;color:var(--gd);letter-spacing:.15em;font-family:'Courier New',monospace}
 .code-hint{font-size:12px;color:var(--g);margin-top:5px}
-input.code-in{font-size:22px;font-weight:700;letter-spacing:.18em;text-align:center;text-transform:uppercase;font-family:'Courier New',monospace;padding:14px}
+input.code-in{font-size:20px;font-weight:700;letter-spacing:.1em;text-align:center;text-transform:uppercase;font-family:'Courier New',monospace;padding:14px}
+input.code-in::placeholder{font-size:14px;letter-spacing:.05em;color:#aaa;font-weight:400}
 .alert{padding:11px 14px;border-radius:var(--r);font-size:13.5px;margin-bottom:10px;display:flex;align-items:flex-start;gap:8px;line-height:1.5}
 .as{background:var(--gl);color:var(--gd);border:1px solid #9FE1CB}
 .ad{background:var(--redl);color:var(--red);border:1px solid #f7c1c1}
@@ -525,9 +526,12 @@ function bCO(){
     <div class="card-ttl">Parent presents pickup code</div>
     <p style="font-size:13.5px;color:var(--mt);margin-bottom:14px;line-height:1.6">Type the code from the parent's WhatsApp, SMS, or printed slip.</p>
     <div class="fg"><label>Pickup code</label>
-      <input type="text" class="code-in" id="codeIn" placeholder="GLT-XXX-XXXX" maxlength="11" value="${S.coCode}"
-        oninput="S.coCode=this.value.toUpperCase().replace(/[^A-Z0-9-]/g,'');this.value=S.coCode"
+      <input type="text" class="code-in" id="codeIn" placeholder="GLT-XXX-XXXX or EFK-9K3U" maxlength="15" value="${S.coCode}"
+        oninput="S.coCode=this.value.toUpperCase();this.value=S.coCode"
         onkeydown="if(event.key==='Enter')doCO()" autocomplete="off" autocorrect="off" autocapitalize="characters">
+    </div>
+    <div class="hint" style="margin-bottom:10px;font-size:12px;color:var(--ht)">
+      Enter the full code e.g. <b>GLT-EFK-9K3U</b> — or just the last part <b>EFK-9K3U</b>. Dashes and spaces are ignored.
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn bp bfl" style="flex:1" onclick="doCO()" ${S.saving?'disabled':''}>${S.saving?ic('refresh',16)+' Checking…':ic('shield-check')+' Verify &amp; Release'}</button>
@@ -1039,7 +1043,7 @@ function bModal(){
     }
     if(m.step==='code'){
       const sess=C.sessions.find(s=>s.id===m.sid);if(!sess)return'';
-      const waMsg=encodeURIComponent(`GLT CHILDREN'S CHURCH\nPickup code for ${c.name}\n\n${sess.code}\n\nDate: ${new Date().toLocaleDateString('en-NG')}\n\nPresent this at reception to collect your child.\nGod's Love Tabernacle International Church — Lekki, Lagos`);
+      const waMsg=encodeURIComponent(`GLT CHILDREN'S CHURCH\nPickup code for ${c.name}\n\n✅ CODE: ${sess.code}\n\nEnter this FULL code exactly as shown above at the reception desk.\nDate: ${new Date().toLocaleDateString('en-NG')}\n\nGod's Love Tabernacle International Church — Lekki, Lagos`);
       const smsMsg=`GLT pickup code for ${c.name}: ${sess.code}. Show at reception. God's Love Tabernacle, Lekki.`;
       return`<div class="mb" onclick="if(event.target===this)cM()"><div class="modal">
         <span class="mh"></span>
@@ -1113,10 +1117,17 @@ async function cfCI(cid){
 }
 
 async function doCO(){
-  const code=S.coCode.trim().toUpperCase();
-  if(!code){toast('Please enter a pickup code');return;}
-  const sess=C.sessions.find(s=>s.code===code&&!s.checkout_time&&new Date(s.checkin_time).toDateString()===today());
-  if(!sess){S.coResult={error:'Code not recognised or already used today.'};render();return;}
+  const raw=S.coCode.trim().toUpperCase().replace(/[^A-Z0-9]/g,''); // strip all non-alphanumeric
+  if(!raw){toast('Please enter a pickup code');return;}
+  // Match flexibly: stored as GLT-XXX-XXXX, accept with/without GLT prefix, with/without dashes
+  const sess=C.sessions.find(s=>{
+    if(!s.code||s.checkout_time)return false;
+    if(new Date(s.checkin_time).toDateString()!==today())return false;
+    const stored=s.code.replace(/[^A-Z0-9]/g,''); // strip dashes from stored code
+    // Match: full code, or code without GLT prefix
+    return stored===raw || stored.replace(/^GLT/,'')===raw || raw===stored.replace(/^GLT/,'');
+  });
+  if(!sess){S.coResult={error:'Code not found. Check the code on the parent\'s slip and try again.'};render();return;}
   S.saving=true;render();
   try{
     const t=new Date().toISOString();
