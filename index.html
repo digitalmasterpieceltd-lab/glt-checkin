@@ -158,6 +158,11 @@ input.code-in::placeholder{font-size:14px;letter-spacing:.05em;color:#aaa;font-w
 @media(max-width:380px){.frow{grid-template-columns:1fr}.hdr-t h1{font-size:12px}}
 @media(min-width:600px){.nav button{font-size:11.5px;padding:8px 4px 10px}.scroll{padding:16px 16px 20px}}
 
+/* ── COMMS TABS ── */
+.comm-tab-btn{flex:1;padding:9px 6px;border:1.5px solid var(--bdr);background:#fff;color:var(--mt);border-radius:var(--r);font-size:13px;cursor:pointer}
+.comm-tab-btn.active{border-color:var(--g);background:var(--gl);color:var(--gd);font-weight:600}
+/* ── CLASS COLOR SWATCH ── */
+.cl-swatch{width:10px;height:36px;border-radius:5px;flex-shrink:0}
 /* ── PHOTO SYSTEM ── */
 .photo-wrap{position:relative;display:inline-block}
 .photo-img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
@@ -219,18 +224,31 @@ const db = {
   delChild:     id=>sbQ(`children?id=eq.${id}`,{method:'DELETE',prefer:''}),
   addSession:   d=>sbQ('sessions',{method:'POST',body:JSON.stringify(d)}),
   updSession:   (id,d)=>sbQ(`sessions?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(d)}),
+  // Classes
+  addClass:     d=>sbQ('classes',{method:'POST',body:JSON.stringify(d)}),
+  updClass:     (id,d)=>sbQ(`classes?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(d)}),
+  delClass:     id=>sbQ(`classes?id=eq.${id}`,{method:'DELETE',prefer:''}),
+  // Templates
+  addTemplate:  d=>sbQ('msg_templates',{method:'POST',body:JSON.stringify(d)}),
+  updTemplate:  (id,d)=>sbQ(`msg_templates?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(d)}),
+  delTemplate:  id=>sbQ(`msg_templates?id=eq.${id}`,{method:'DELETE',prefer:''}),
+  // Message log
+  logMsg:       d=>sbQ('msg_log',{method:'POST',body:JSON.stringify(d),prefer:''}),
 };
 
 /* ══ Cache ══ */
-let C = {stewards:[],parents:[],children:[],sessions:[]};
+let C = {stewards:[],parents:[],children:[],sessions:[],classes:[],templates:[]};
 let syncSt='load', syncMsg='Connecting…';
 
 async function loadAll(silent=false){
   if(!silent){syncSt='load'; syncMsg='Loading…'; render();}
   try{
-    const[s,p,c,se]=await Promise.all([db.stewards(),db.parents(),db.children(),db.sessions()]);
+    const[s,p,c,se,cl,tp]=await Promise.all([db.stewards(),db.parents(),db.children(),db.sessions(),
+      sbQ('classes?order=name&is_active=eq.true').catch(()=>[]),
+      sbQ('msg_templates?order=category,name').catch(()=>[])
+    ]);
     const wasErr=syncSt==='err';
-    C={stewards:s,parents:p,children:c,sessions:se};
+    C={stewards:s,parents:p,children:c,sessions:se,classes:cl,templates:tp};
     syncSt='ok'; syncMsg='Synced '+fmtTime(new Date());
     // Only re-render on silent refresh if there were actual changes or a previous error
     if(!silent||wasErr) render();
@@ -288,6 +306,10 @@ let S = {
   loginUser:'', loginPass:'', loginErr:'', loginForgot:false, forgotName:'', forgotMsg:'',
   cpCur:'', cpNew:'', cpCon:'', cpErr:'', cpMode:false,
   belongings:[], belongOther:'', reportsOpen:false,
+  clForm:false, eClId:null, nc_cl:{name:'',description:'',teacher:'',class_group:'',capacity:30,color:'#1a6b2e'},
+  tmplForm:false, eTmplId:null, nc_tmpl:{name:'',body:'',category:'general'},
+  commTarget:'all', commClass:'', commMsg:'', commTmpl:'', commTab:'broadcast',
+  parentAbsent:false,
   nc:{name:'',age:'',group:GROUPS[0],parent_id:'',alert_note:'',medication:'',feeding_notes:'',care_notes:''},
   np:{name:'',phone:'',whatsapp:'',email:'',emergency_phone:'',emergency_name:'',auth2:'',auth3:''},
   nsw:{name:'',username:'',password:'',role:'steward',phone:'',email:'',address:'',emergency_contact:'',emergency_phone:''},
@@ -304,7 +326,7 @@ function buildApp(){
   if(C.stewards.length===0) return bHdr(false)+bFirstSetup();
   if(!isSW()) return bHdr(false)+bLogin();
   return bHdr(true)+`<div class="scroll">`+
-    (S.modal?'':S.tab==='checkin'?bCI():S.tab==='checkout'?bCO():S.tab==='children'?bCH():S.tab==='parents'?bPR():S.tab==='admin'?bAdmin():bDB())+
+    (S.modal?'':S.tab==='checkin'?bCI():S.tab==='checkout'?bCO():S.tab==='children'?bCH():S.tab==='parents'?bPR():S.tab==='classes'?bClasses():S.tab==='comms'?bComms():S.tab==='admin'?bAdmin():bDB())+
     `</div>`+bNav()+(S.modal?bModal():'');
 }
 
@@ -342,8 +364,10 @@ function bNav(){
     {id:'parents',icon:'users',lbl:'Parents'},
     {id:'dashboard',icon:'chart-bar',lbl:'Dashboard'},
   ];
+  if(isAdm()) tabs.push({id:'classes',icon:'users',lbl:'Classes'});
+  if(isAdm()) tabs.push({id:'comms',icon:'brand-whatsapp',lbl:'Comms'});
   if(isAdm()) tabs.push({id:'admin',icon:'settings',lbl:'Admin'});
-  return `<nav class="nav">${tabs.map(t=>`<button class="${S.tab===t.id?'active':''}" onclick="go('${t.id}')">${ic(t.icon,22)}<span>${t.lbl}</span></button>`).join('')}</nav>`;
+  return `<nav class="nav">${tabs.map(t=>`<button class="${S.tab===t.id?'active':''}" onclick="go('${t.id}')">${ic(t.icon,20)}<span>${t.lbl}</span></button>`).join('')}</nav>`;
 }
 
 /* ══════════════════════════════════
@@ -545,17 +569,26 @@ function coResult(){
   const r=S.coResult;
   if(r.error)return`<div class="alert ad">${ic('alert-circle',18)}<div>${r.error}</div></div>`;
   const c=C.children.find(x=>x.id===r.cid);if(!c)return'';
-  const cl=col(hue(c.name));const p=parentOf(c.id);
+  const p=parentOf(c.id);
   const sess=C.sessions.find(s=>s.id===r.sid);
+  const checkoutTime=fmtTime(new Date());
+  const collectedBy=ME.name;
+  const coMsg=encodeURIComponent(`Dear ${p?.name||'Parent'}, your child ${c.name} has been safely collected at ${checkoutTime} by ${collectedBy}. Thank you for worshipping with us at God's Love Tabernacle. See you next Sunday! 🙏`);
+  const coSMS=`GLT SafePass: ${c.name} was collected at ${checkoutTime}. God bless — GLT Children's Church.`;
   return`<div class="card"><div style="text-align:center;padding:12px 0">
     <div style="font-size:44px;margin-bottom:8px">✅</div>
     <div style="font-size:17px;font-weight:600;margin-bottom:3px">Child released</div>
-    <div style="font-size:12.5px;color:var(--mt);margin-bottom:3px">By: <b>${ME.name}</b> · ${fmtTime(new Date())}</div>
-    ${sess?.belongings?`<div style="font-size:12px;color:var(--amb);margin-bottom:12px">${ic('shopping-bag',13)} ${sess.belongings}</div>`:'<div style="margin-bottom:12px"></div>'}
-    <div class="cc" style="max-width:320px;margin:0 auto;cursor:default">
-      <div ${photoAv(c.name,c.photo_url,44,hue(c.name))}
+    <div style="font-size:12.5px;color:var(--mt);margin-bottom:3px">By: <b>${ME.name}</b> · ${checkoutTime}</div>
+    ${sess?.belongings?`<div style="font-size:12px;color:var(--amb);margin-bottom:10px">${ic('shopping-bag',13)} ${sess.belongings}</div>`:''}
+    <div class="cc" style="max-width:320px;margin:0 auto 14px;cursor:default">
+      ${photoAv(c.name,c.photo_url,44,hue(c.name))}
       <div class="ci"><div class="cname">${c.name}</div><div class="cmeta">${c.class_group}${p?' · '+p.name:''}</div></div>
       <span class="badge ba">Released</span>
+    </div>
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--mt)">Send pickup confirmation to parent:</div>
+    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+      ${p?.whatsapp?`<a href="https://wa.me/${p.whatsapp}?text=${coMsg}" target="_blank" class="btn bwa bsm">${ic('brand-whatsapp')} WhatsApp</a>`:''}
+      ${p?.phone?`<a href="sms:${p.phone}?body=${encodeURIComponent(coSMS)}" class="btn bsms bsm">${ic('device-mobile-message')} SMS</a>`:''}
     </div>
   </div></div>`;
 }
@@ -931,7 +964,10 @@ function bDB(){
           ${s.belongings?`<div style="font-size:11px;color:var(--amb)">${ic('shopping-bag',11)} ${s.belongings}</div>`:''}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
           <span class="badge bg">${ic('check',12)} In</span>
+          ${s.parent_absent?`<span style="font-size:10px;background:var(--ambl);color:var(--amb);padding:1px 6px;border-radius:10px;white-space:nowrap">Parent away</span>`:''}
+        </div>
           ${durBadge(s.checkin_time)}
         </div>
       </div>`;
@@ -1037,6 +1073,10 @@ function bModal(){
           <div class="fg"><label>Other items</label>
             <input type="text" id="b_oth" value="${S.belongOther}" placeholder="e.g. Special comfort toy" oninput="S.belongOther=this.value">
           </div>
+           <div class="cb-row" style="margin-bottom:10px">
+             <input type="checkbox" id="absent_parent" ${S.parentAbsent?'checked':''} onchange="S.parentAbsent=this.checked">
+             <label for="absent_parent" style="font-size:13.5px">Parent not present today <span style="color:var(--mt);font-size:12px">(code sent to phone)</span></label>
+           </div>
           <button class="btn bp bfl" onclick="cfCI('${c.id}')" ${S.saving?'disabled':''}>${S.saving?ic('refresh',16)+' Saving…':ic('circle-check')+' Confirm check-in'}</button>`}
         <button class="btn bo bfl" style="margin-top:10px" onclick="cM()">Cancel</button>
       </div></div>`;
@@ -1061,7 +1101,7 @@ function bModal(){
           <button class="btn bpr bsm" onclick="pSlip('${sess.id}')">${ic('printer')} Print</button>
         </div>
         <div class="div"></div>
-        <button class="btn bp bfl" onclick="cM();S.q='';S.belongings=[];S.belongOther='';render()">${ic('check')} Done — next child</button>
+        <button class="btn bp bfl" onclick="cM();S.q='';S.belongings=[];S.belongOther='';S.parentAbsent=false;render()">${ic('check')} Done — next child</button>
       </div></div>`;
     }
   }
@@ -1098,7 +1138,7 @@ function bModal(){
 }
 
 /* ══ ACTIONS ══ */
-function go(t){S.tab=t;S.modal=null;S.coResult=null;S.cForm=false;S.pForm=false;S.swForm=false;S.eCid=null;S.ePid=null;S.eSwId=null;S.pq='';S.swq='';S.cpMode=false;render();}
+function go(t){S.tab=t;S.modal=null;S.coResult=null;S.cForm=false;S.pForm=false;S.swForm=false;S.clForm=false;S.tmplForm=false;S.eCid=null;S.ePid=null;S.eSwId=null;S.eClId=null;S.eTmplId=null;S.pq='';S.swq='';S.cpMode=false;render();}
 function toggleB(b){S.belongings=Array.isArray(S.belongings)?S.belongings.includes(b)?S.belongings.filter(x=>x!==b):[...S.belongings,b]:[];}
 function oCI(id){S.modal={type:'ci',cid:id,step:'confirm'};S.belongings=[];S.belongOther='';render();}
 function viewChild(id){S.modal={type:'viewchild',cid:id};render();}
@@ -1109,7 +1149,7 @@ async function cfCI(cid){
   try{
     const bAll=[...S.belongings,S.belongOther].filter(Boolean).join(', ');
     const code=genCode();
-    const rows=await db.addSession({child_id:cid,code,checkin_time:new Date().toISOString(),checkout_time:null,checkin_by:ME.id,checkout_by:null,belongings:bAll||null});
+    const rows=await db.addSession({child_id:cid,code,checkin_time:new Date().toISOString(),checkout_time:null,checkin_by:ME.id,checkout_by:null,belongings:bAll||null,parent_absent:S.parentAbsent||false});
     const sess=Array.isArray(rows)?rows[0]:rows;
     C.sessions.unshift(sess);
     S.saving=false;S.modal={type:'ci',cid,step:'code',sid:sess.id};render();
@@ -1544,3 +1584,381 @@ loadAll().then(()=>{
 </script>
 </body>
 </html>
+/* ══ CLASSES TAB ══ */
+function bClasses(){
+  if(!isAdm())return`<div class="empty">${ic('lock',36)}<div style="margin-top:10px">Admin only</div></div>`;
+  if(S.clForm)return clForm();
+  const today_sess=todaySess();
+  return`
+  <div class="sec-hdr"><h3>${C.classes.length} classes</h3>
+    <button class="btn bp bsm" onclick="oClR()">${ic('user-plus')} New class</button>
+  </div>
+  ${C.classes.length===0?`<div class="card" style="text-align:center;padding:24px">
+    <div style="font-size:32px;margin-bottom:10px">📚</div>
+    <div style="font-size:14px;font-weight:600;margin-bottom:6px">No classes yet</div>
+    <div style="font-size:13px;color:var(--mt);margin-bottom:14px">Create classes to organise children and track attendance by group</div>
+    <button class="btn bp bsm" onclick="oClR()">${ic('user-plus')} Create first class</button>
+  </div>`
+  :C.classes.map(cl=>{
+    const children=C.children.filter(c=>c.class_group===cl.class_group);
+    const presentToday=children.filter(c=>today_sess.some(s=>s.child_id===c.id));
+    const stillIn=children.filter(c=>openSess(c.id));
+    const absent3=children.filter(c=>{
+      const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+      if(!last)return true;
+      const weeks=Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000));
+      return weeks>=3;
+    });
+    return`<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div style="width:10px;height:36px;border-radius:5px;background:${cl.color||'#1a6b2e'};flex-shrink:0"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:15px">${cl.name}</div>
+          <div style="font-size:12px;color:var(--mt)">${cl.class_group||''}${cl.teacher?' · Teacher: '+cl.teacher:''}</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn bo bxs" onclick="oClE('${cl.id}')">${ic('edit')}</button>
+          <button class="btn bd bxs" onclick="dCl('${cl.id}')">${ic('trash')}</button>
+        </div>
+      </div>
+      <!-- Stats row -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px">
+        <div style="background:#f9fdf9;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:20px;font-weight:700;color:var(--g)">${children.length}</div>
+          <div style="font-size:10px;color:var(--mt)">Enrolled</div>
+        </div>
+        <div style="background:#f9fdf9;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:20px;font-weight:700;color:var(--gm)">${presentToday.length}</div>
+          <div style="font-size:10px;color:var(--mt)">Today</div>
+        </div>
+        <div style="background:#f9fdf9;border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:20px;font-weight:700;color:var(--blu)">${stillIn.length}</div>
+          <div style="font-size:10px;color:var(--mt)">Inside</div>
+        </div>
+        <div style="background:${absent3.length>0?'#fcebeb':'#f9fdf9'};border-radius:8px;padding:8px;text-align:center">
+          <div style="font-size:20px;font-weight:700;color:${absent3.length>0?'var(--red)':'var(--mt)'}">${absent3.length}</div>
+          <div style="font-size:10px;color:var(--mt)">3wk absent</div>
+        </div>
+      </div>
+      <!-- Children roster -->
+      ${children.length>0?`<div style="border-top:1px solid var(--bdr);padding-top:10px">
+        <div style="font-size:11px;font-weight:600;color:var(--ht);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Children in this class</div>
+        ${children.map(c=>{
+          const sess=openSess(c.id);
+          const p=parentOf(c.id);
+          const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+          const weeksAgo=last?Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000)):99;
+          const isAbsent=weeksAgo>=3;
+          return`<div class="li" style="min-height:48px">
+            ${photoAv(c.name,c.photo_url,36,hue(c.name))}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13.5px;font-weight:600">${c.name}${isAbsent?` <span style="font-size:10px;background:var(--redl);color:var(--red);padding:1px 6px;border-radius:10px">Absent ${weeksAgo}wk</span>`:''}</div>
+              <div style="font-size:11px;color:var(--mt)">${p?p.name:''}</div>
+            </div>
+            ${sess?`<span class="badge bg" style="font-size:10.5px">${ic('check',11)} In · ${durBadge(sess.checkin_time)}</span>`
+              :`<span style="font-size:11px;color:var(--ht)">Not in</span>`}
+          </div>`;
+        }).join('')}
+      </div>`:''}
+      ${absent3.length>0?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--bdr)">
+        <button class="btn bd bsm bfl" onclick="commAbsentClass('${cl.class_group}')" style="font-size:12.5px">
+          ${ic('brand-whatsapp',14)} Follow up ${absent3.length} absent child${absent3.length!==1?'ren':''} in this class
+        </button>
+      </div>`:''}
+    </div>`;
+  }).join('')}`;
+}
+
+function clForm(){
+  const d=S.eClId?C.classes.find(x=>x.id===S.eClId):S.nc_cl;
+  const COLORS_CL=['#1a6b2e','#0c447c','#7a4f00','#534AB7','#a32d2d','#075e54'];
+  return`<div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <button class="btn bo bsm" onclick="cClF()">${ic('arrow-left')}</button>
+      <h3 style="font-size:15px;font-weight:600">${S.eClId?'Edit class':'Create class'}</h3>
+    </div>
+    <div class="fg"><label>Class name *</label><input type="text" id="cl_name" value="${d.name}" placeholder="e.g. Junior Church A"></div>
+    <div class="fg"><label>Description</label><input type="text" id="cl_desc" value="${d.description||''}" placeholder="e.g. Ages 8-10, meets in Room 3"></div>
+    <div class="frow">
+      <div class="fg"><label>Class group *</label>
+        <select id="cl_grp">${GROUPS.map(g=>`<option ${d.class_group===g?'selected':''}>${g}</option>`).join('')}</select>
+      </div>
+      <div class="fg"><label>Teacher / volunteer</label><input type="text" id="cl_tchr" value="${d.teacher||''}" placeholder="e.g. Sis. Joy Obi"></div>
+    </div>
+    <div class="fg"><label>Capacity</label><input type="number" id="cl_cap" value="${d.capacity||30}" min="1" max="200" inputmode="numeric"></div>
+    <div class="fg"><label>Colour</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+        ${COLORS_CL.map(c=>`<div onclick="document.getElementById('cl_clr').value='${c}';render()" style="width:32px;height:32px;border-radius:50%;background:${c};cursor:pointer;border:3px solid ${d.color===c?'#fff':'transparent'};outline:2px solid ${d.color===c?c:'transparent'}"></div>`).join('')}
+        <input type="color" id="cl_clr" value="${d.color||'#1a6b2e'}" style="width:32px;height:32px;border:none;border-radius:50%;cursor:pointer;padding:0">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn bp bfl" style="flex:1" onclick="sCl()" ${S.saving?'disabled':''}>${S.saving?ic('refresh',16)+' Saving…':ic('check')+' '+(S.eClId?'Save':'Create class')}</button>
+      <button class="btn bo" onclick="cClF()">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function oClR(){S.clForm=true;S.eClId=null;S.nc_cl={name:'',description:'',teacher:'',class_group:GROUPS[0],capacity:30,color:'#1a6b2e'};render();}
+function oClE(id){S.eClId=id;S.clForm=true;render();}
+function cClF(){S.clForm=false;S.eClId=null;render();}
+
+async function sCl(){
+  const g=id=>document.getElementById(id)?.value?.trim()||'';
+  const name=g('cl_name'),class_group=g('cl_grp');
+  if(!name){toast('Class name is required');return;}
+  const data={name,description:g('cl_desc'),teacher:g('cl_tchr'),class_group,capacity:parseInt(g('cl_cap'))||30,color:g('cl_clr')||'#1a6b2e',is_active:true};
+  S.saving=true;render();
+  try{
+    if(S.eClId){
+      await db.updClass(S.eClId,data);
+      const idx=C.classes.findIndex(x=>x.id===S.eClId);
+      if(idx>=0)C.classes[idx]={...C.classes[idx],...data};
+    }else{
+      const rows=await db.addClass(data);
+      C.classes.push(Array.isArray(rows)?rows[0]:rows);
+    }
+    S.saving=false;S.clForm=false;S.eClId=null;toast(S.eClId?'Class updated':'Class created');render();
+  }catch(e){S.saving=false;toast('Failed: '+e.message);render();}
+}
+
+async function dCl(id){
+  const cl=C.classes.find(x=>x.id===id);
+  if(!confirm('Delete class "'+cl.name+'"?'))return;
+  try{await db.delClass(id);C.classes=C.classes.filter(x=>x.id!==id);toast('Class deleted');render();}
+  catch(e){toast('Failed: '+e.message);}
+}
+
+/* ══ COMMUNICATIONS CENTRE ══ */
+function bComms(){
+  if(!isAdm())return`<div class="empty">${ic('lock',36)}<div style="margin-top:10px">Admin only</div></div>`;
+  if(S.tmplForm)return tmplForm();
+  const tabs=[{id:'broadcast',lbl:'Broadcast'},{id:'followup',lbl:'Follow-up'},{id:'templates',lbl:'Templates'}];
+  return`
+  <!-- TABS -->
+  <div style="display:flex;gap:6px;margin-bottom:12px">
+    ${tabs.map(t=>`<button onclick="S.commTab='${t.id}';render()" style="flex:1;padding:9px 6px;border:1.5px solid ${S.commTab===t.id?'var(--g)':'var(--bdr)'};background:${S.commTab===t.id?'var(--gl)':'#fff'};color:${S.commTab===t.id?'var(--gd)':'var(--mt)'};border-radius:var(--r);font-size:13px;font-weight:${S.commTab===t.id?'600':'400'};cursor:pointer">${t.lbl}</button>`).join('')}
+  </div>
+  ${S.commTab==='broadcast'?bBroadcast():S.commTab==='followup'?bFollowUp():bTemplates()}`;
+}
+
+function bBroadcast(){
+  const tmplOpts=C.templates.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
+  const classOpts=C.classes.map(c=>`<option value="${c.class_group}">${c.name}</option>`).join('');
+  const target=S.commTarget;
+  // Build recipient list
+  let recipients=[];
+  if(target==='all') recipients=C.parents.filter(p=>p.phone||p.whatsapp);
+  else if(target==='class') recipients=[...new Set(C.children.filter(c=>c.class_group===S.commClass).map(c=>parentOf(c.id)).filter(Boolean))];
+  else if(target==='absent3'){
+    const absent=C.children.filter(c=>{
+      const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+      return !last||Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000))>=3;
+    });
+    recipients=[...new Map(absent.map(c=>[c.parent_id,parentOf(c.id)]).filter(([,p])=>p)).values()];
+  }
+  const msgBody=S.commMsg||'';
+  return`<div class="card">
+    <div class="card-ttl">Send message to parents</div>
+    <div class="fg"><label>Send to</label>
+      <select onchange="S.commTarget=this.value;render()">
+        <option value="all" ${target==='all'?'selected':''}>All parents (${C.parents.length})</option>
+        <option value="class" ${target==='class'?'selected':''}>Specific class</option>
+        <option value="absent3" ${target==='absent3'?'selected':''}>3-week absentees</option>
+      </select>
+    </div>
+    ${target==='class'?`<div class="fg"><label>Select class</label>
+      <select onchange="S.commClass=this.value;render()">
+        <option value="">— choose class —</option>
+        ${classOpts}
+      </select>
+    </div>`:''}
+    <div class="fg"><label>Use a template (optional)</label>
+      <select onchange="S.commTmpl=this.value;const t=C.templates.find(x=>x.id===this.value);if(t){S.commMsg=t.body;document.getElementById('comm_msg').value=t.body;}render()">
+        <option value="">— or type your own message —</option>
+        ${tmplOpts}
+      </select>
+    </div>
+    <div class="fg"><label>Message *</label>
+      <textarea id="comm_msg" placeholder="Type your message here… Use {parent_name} and {child_name} as placeholders." style="min-height:100px" oninput="S.commMsg=this.value">${msgBody}</textarea>
+      <div class="hint">{parent_name} → replaced with each parent's name · {child_name} → their child's name</div>
+    </div>
+    <div class="alert ai" style="margin-bottom:12px">${ic('brand-whatsapp',16)}
+      <div>Tapping <b>Send via WhatsApp</b> opens WhatsApp with each parent's pre-written message. Tap once per parent.<br>
+      For bulk SMS, connect Termii in Settings.</div>
+    </div>
+    <div style="font-size:13px;font-weight:600;color:var(--mt);margin-bottom:8px">${recipients.length} recipient${recipients.length!==1?'s':''}</div>
+    <div style="max-height:200px;overflow-y:auto;margin-bottom:12px">
+      ${recipients.slice(0,20).map(p=>{
+        const kids=C.children.filter(c=>c.parent_id===p.id);
+        const msg=encodeURIComponent((S.commMsg||'').replace(/{parent_name}/g,p.name).replace(/{child_name}/g,kids.map(c=>c.name).join(' & ')));
+        return`<div class="li" style="min-height:44px">
+          ${photoAv(p.name,p.photo_url,32,hue(p.name))}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600">${p.name}</div>
+            <div style="font-size:11px;color:var(--mt)">${kids.map(c=>c.name).join(', ')}</div>
+          </div>
+          <div style="display:flex;gap:5px">
+            ${p.whatsapp?`<a href="https://wa.me/${p.whatsapp}?text=${msg}" target="_blank" class="btn bwa bxs" style="font-size:11px">${ic('brand-whatsapp',13)}</a>`:''}
+            ${p.phone?`<a href="sms:${p.phone}?body=${msg}" class="btn bsms bxs" style="font-size:11px">${ic('device-mobile-message',13)}</a>`:''}
+            ${p.phone?`<a href="tel:${p.phone}" class="btn bo bxs" style="font-size:11px">${ic('phone',13)}</a>`:''}
+          </div>
+        </div>`;
+      }).join('')}
+      ${recipients.length>20?`<div style="text-align:center;font-size:12px;color:var(--ht);padding:8px">...and ${recipients.length-20} more</div>`:''}
+    </div>
+    ${recipients.length===0?`<div class="alert aw">${ic('alert-triangle',16)}<div>No recipients found for this selection.</div></div>`:''}
+  </div>`;
+}
+
+function bFollowUp(){
+  const today_sess=todaySess();
+  // Children whose parents didn't check them in today — i.e. not present
+  const notToday=C.children.filter(c=>!today_sess.some(s=>s.child_id===c.id));
+  // Children still inside (late pickup)
+  const stillIn=todaySess().filter(s=>!s.checkout_time);
+  const longIn=stillIn.filter(s=>Math.floor((Date.now()-new Date(s.checkin_time))/60000)>120);
+  // 3-week absentees
+  const absent3=C.children.filter(c=>{
+    const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+    return !last||Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000))>=3;
+  });
+  return`
+  ${longIn.length>0?`<div class="card" style="border-left:4px solid var(--red)">
+    <div class="card-ttl" style="color:var(--red)">⚠️ Late pickup (${longIn.length})</div>
+    ${longIn.map(s=>{
+      const c=C.children.find(x=>x.id===s.child_id);if(!c)return'';
+      const p=parentOf(c.id);
+      const mins=Math.floor((Date.now()-new Date(s.checkin_time))/60000);
+      const msg=encodeURIComponent(`Dear ${p?.name||'Parent'}, your child ${c.name} is still at GLT Children's Church and is ready for pickup. Please come to reception as soon as you can. God bless — GLT Children's Church.`);
+      return`<div class="li">
+        ${photoAv(c.name,c.photo_url,36,hue(c.name))}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:600">${c.name}</div>
+          <div style="font-size:11px;color:var(--red)">Inside for ${mins}min · ${p?p.name:''}</div>
+        </div>
+        ${p?.whatsapp?`<a href="https://wa.me/${p.whatsapp}?text=${msg}" target="_blank" class="btn bwa bxs">${ic('brand-whatsapp',13)}</a>`:''}
+        ${p?.phone?`<a href="tel:${p.phone}" class="btn bo bxs">${ic('phone',13)}</a>`:''}
+      </div>`;
+    }).join('')}
+  </div>`:''}
+
+  <div class="card">
+    <div class="card-ttl">Not present today (${notToday.length})</div>
+    ${notToday.length===0?`<div style="text-align:center;font-size:13px;color:var(--ht);padding:12px">All registered children are present today 🎉</div>`:''}
+    ${notToday.slice(0,30).map(c=>{
+      const p=parentOf(c.id);
+      const msg=encodeURIComponent(`Dear ${p?.name||'Parent'}, we missed ${c.name} in Children's Church today! We hope all is well. We look forward to seeing you next Sunday. God bless — GLT Children's Church 🙏`);
+      return`<div class="li">
+        ${photoAv(c.name,c.photo_url,32,hue(c.name))}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600">${c.name}</div>
+          <div style="font-size:11px;color:var(--mt)">${c.class_group}${p?' · '+p.name:''}</div>
+        </div>
+        <div style="display:flex;gap:5px">
+          ${p?.whatsapp?`<a href="https://wa.me/${p.whatsapp}?text=${msg}" target="_blank" class="btn bwa bxs" style="font-size:11px">${ic('brand-whatsapp',13)}</a>`:''}
+          ${p?.phone?`<a href="tel:${p.phone}" class="btn bo bxs" style="font-size:11px">${ic('phone',13)}</a>`:''}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>
+
+  ${absent3.length>0?`<div class="card">
+    <div class="card-ttl" style="color:var(--red)">3+ week absentees (${absent3.length})</div>
+    ${absent3.map(c=>{
+      const p=parentOf(c.id);
+      const msg=encodeURIComponent(`Dear ${p?.name||'Parent'}, we have missed ${c.name} in Children's Church for a few Sundays. We hope all is well with your family. Please know we are praying for you. God bless — GLT Children's Church 🙏`);
+      return`<div class="li">
+        ${photoAv(c.name,c.photo_url,32,hue(c.name))}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600">${c.name}</div>
+          <div style="font-size:11px;color:var(--mt)">${c.class_group}${p?' · '+p.name:''}</div>
+        </div>
+        <div style="display:flex;gap:5px">
+          ${p?.whatsapp?`<a href="https://wa.me/${p.whatsapp}?text=${msg}" target="_blank" class="btn bwa bxs" style="font-size:11px">${ic('brand-whatsapp',13)}</a>`:''}
+          ${p?.phone?`<a href="tel:${p.phone}" class="btn bo bxs" style="font-size:11px">${ic('phone',13)}</a>`:''}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`:''}`;
+}
+
+function bTemplates(){
+  if(S.tmplForm)return tmplForm();
+  const cats={general:'General',followup:'Follow-up',emergency:'Emergency',checkout:'Checkout'};
+  return`
+  <div class="sec-hdr"><h3>Message templates (${C.templates.length})</h3>
+    <button class="btn bp bsm" onclick="oTmplR()">${ic('user-plus')} New</button>
+  </div>
+  ${C.templates.map(t=>`<div class="card" style="margin-bottom:8px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="badge ${t.category==='emergency'?'br':t.category==='checkout'?'bg':t.category==='followup'?'ba':'bb'}" style="font-size:11px">${cats[t.category]||t.category}</span>
+      <span style="font-weight:600;font-size:14px;flex:1">${t.name}</span>
+      <button class="btn bo bxs" onclick="oTmplE('${t.id}')">${ic('edit')}</button>
+      <button class="btn bd bxs" onclick="dTmpl('${t.id}')">${ic('trash')}</button>
+    </div>
+    <div style="font-size:13px;color:var(--mt);line-height:1.6;background:#f9fdf9;padding:10px;border-radius:8px">${t.body}</div>
+  </div>`).join('')}`;
+}
+
+function tmplForm(){
+  const d=S.eTmplId?C.templates.find(x=>x.id===S.eTmplId):S.nc_tmpl;
+  return`<div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <button class="btn bo bsm" onclick="cTmplF()">${ic('arrow-left')}</button>
+      <h3 style="font-size:15px;font-weight:600">${S.eTmplId?'Edit template':'New template'}</h3>
+    </div>
+    <div class="fg"><label>Template name *</label><input type="text" id="tp_name" value="${d.name}" placeholder="e.g. Sunday reminder"></div>
+    <div class="fg"><label>Category</label>
+      <select id="tp_cat">
+        <option value="general" ${d.category==='general'?'selected':''}>General announcement</option>
+        <option value="followup" ${d.category==='followup'?'selected':''}>Follow-up / pastoral care</option>
+        <option value="emergency" ${d.category==='emergency'?'selected':''}>Emergency / urgent</option>
+        <option value="checkout" ${d.category==='checkout'?'selected':''}>Checkout confirmation</option>
+      </select>
+    </div>
+    <div class="fg"><label>Message body *</label>
+      <textarea id="tp_body" style="min-height:120px" placeholder="Use {parent_name}, {child_name}, {checkout_time}, {message} as placeholders">${d.body}</textarea>
+      <div class="hint">Available placeholders: {parent_name} {child_name} {checkout_time} {message}</div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button class="btn bp bfl" style="flex:1" onclick="sTmpl()" ${S.saving?'disabled':''}>${S.saving?ic('refresh',16)+' Saving…':ic('check')+' '+(S.eTmplId?'Save':'Create')}</button>
+      <button class="btn bo" onclick="cTmplF()">Cancel</button>
+    </div>
+  </div>`;
+}
+
+function oTmplR(){S.tmplForm=true;S.eTmplId=null;S.nc_tmpl={name:'',body:'',category:'general'};render();}
+function oTmplE(id){S.eTmplId=id;S.tmplForm=true;render();}
+function cTmplF(){S.tmplForm=false;S.eTmplId=null;render();}
+
+async function sTmpl(){
+  const g=id=>document.getElementById(id)?.value?.trim()||'';
+  const name=g('tp_name'),body=g('tp_body'),category=g('tp_cat');
+  if(!name||!body){toast('Name and message body required');return;}
+  S.saving=true;render();
+  try{
+    const data={name,body,category};
+    if(S.eTmplId){
+      await db.updTemplate(S.eTmplId,data);
+      const idx=C.templates.findIndex(x=>x.id===S.eTmplId);
+      if(idx>=0)C.templates[idx]={...C.templates[idx],...data};
+    }else{
+      const rows=await db.addTemplate(data);
+      C.templates.push(Array.isArray(rows)?rows[0]:rows);
+    }
+    S.saving=false;S.tmplForm=false;S.eTmplId=null;toast(S.eTmplId?'Template updated':'Template created');render();
+  }catch(e){S.saving=false;toast('Failed: '+e.message);render();}
+}
+
+async function dTmpl(id){
+  if(!confirm('Delete this template?'))return;
+  try{await db.delTemplate(id);C.templates=C.templates.filter(x=>x.id!==id);toast('Deleted');render();}
+  catch(e){toast('Failed: '+e.message);}
+}
+
+function commAbsentClass(classGroup){
+  S.tab='comms';S.commTab='broadcast';S.commTarget='class';S.commClass=classGroup;
+  S.commMsg=`Dear {parent_name}, we missed {child_name} in Children's Church today! We hope all is well and look forward to seeing you next Sunday. God bless — GLT Children's Church 🙏`;
+  render();
+}
