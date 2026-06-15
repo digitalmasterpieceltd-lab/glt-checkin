@@ -240,6 +240,15 @@ const db = {
 let C = {stewards:[],parents:[],children:[],sessions:[],classes:[],templates:[]};
 let syncSt='load', syncMsg='Connecting…';
 
+
+// Extend cache with churchSessions
+const _patchLoadChurchSessions = async(silent)=>{
+  try{
+    const cs=await sbQ('church_sessions?order=opened_at.desc&limit=100');
+    C.churchSessions=cs;
+  }catch(e){C.churchSessions=[];}
+};
+
 async function loadAll(silent=false){
   if(!silent){syncSt='load'; syncMsg='Loading…'; render();}
   try{
@@ -248,7 +257,9 @@ async function loadAll(silent=false){
       sbQ('msg_templates?order=category,name').catch(()=>[])
     ]);
     const wasErr=syncSt==='err';
-    C={stewards:s,parents:p,children:c,sessions:se,classes:cl,templates:tp};
+    C={stewards:s,parents:p,children:c,sessions:se,classes:cl,templates:tp,churchSessions:[]};
+    await _patchLoadChurchSessions(silent);
+    await loadChurchSession();
     syncSt='ok'; syncMsg='Synced '+fmtTime(new Date());
     // Only re-render on silent refresh if there were actual changes or a previous error
     if(!silent||wasErr) render();
@@ -521,7 +532,7 @@ function doForgot(){
 function bCI(){
   const q=S.q.toLowerCase().trim();
   const res=q.length>1?C.children.filter(c=>c.name.toLowerCase().includes(q)||(parentOf(c.id)?.name||'').toLowerCase().includes(q)):[];
-  return `
+  return bSessionBanner()+`
   <div class="card" style="margin-bottom:10px">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
       <span class="pulse"></span>
@@ -914,408 +925,6 @@ async function doChangePw(){
 }
 
 /* ══ DASHBOARD ══ */
-function bDB(){
-  const ts=todaySess();const ins=inside();const out=ts.filter(s=>s.checkout_time).length;
-  const byG={};GROUPS.forEach(g=>byG[g]={in:0,tot:0});
-  ts.forEach(s=>{const c=C.children.find(x=>x.id===s.child_id);if(c){byG[c.class_group].tot++;if(!s.checkout_time)byG[c.class_group].in++;}});
-  const ag=GROUPS.filter(g=>byG[g].tot>0);
-  return`
-  <div class="stats">
-    <div class="stat"><div class="stat-n" style="color:var(--g)">${ins}</div><div class="stat-l">Inside now</div></div>
-    <div class="stat"><div class="stat-n" style="color:var(--blu)">${ts.length}</div><div class="stat-l">Today</div></div>
-    <div class="stat"><div class="stat-n" style="color:var(--mt)">${out}</div><div class="stat-l">Released</div></div>
-  </div>
-  <!-- ACTIVITY FEED -->
-  <div class="card" style="margin-bottom:10px">
-    <div class="card-ttl" style="display:flex;align-items:center;justify-content:space-between">
-      <span>Recent activity</span>
-      <span style="font-size:10px;color:var(--ht);font-weight:400">${todaySess().length} events today</span>
-    </div>
-    ${(()=>{
-      const recent=[...todaySess()].slice(0,6);
-      if(recent.length===0)return`<div style="font-size:13px;color:var(--ht);text-align:center;padding:12px">No activity yet today</div>`;
-      return recent.reverse().map(s=>{
-        const c=C.children.find(x=>x.id===s.child_id);if(!c)return'';
-        const isOut=!!s.checkout_time;
-        const time=isOut?fmtTime(s.checkout_time):fmtTime(s.checkin_time);
-        const who=isOut?swName(s.checkout_by):swName(s.checkin_by);
-        return`<div class="activity-item">
-          <div class="activity-dot ${isOut?'co':'ci'}"></div>
-          ${photoAv(c.name,c.photo_url,32,hue(c.name))}
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:600">${c.name}</div>
-            <div style="font-size:11.5px;color:var(--mt)">${isOut?'Checked out':'Checked in'} · ${time} · by ${who}</div>
-          </div>
-          <span class="badge ${isOut?'ba':'bg'}" style="font-size:10.5px">${isOut?'Out':'In'}</span>
-        </div>`;
-      }).join('');
-    })()}
-  </div>
-
-  ${ins>0?`<div class="card"><div class="card-ttl">Inside right now</div>
-    ${ts.filter(s=>!s.checkout_time).map(s=>{
-      const c=C.children.find(x=>x.id===s.child_id);if(!c)return'';
-      const cl=col(hue(c.name));const p=parentOf(c.id);
-      return`<div class="li">
-        ${photoAv(c.name,c.photo_url,36,hue(c.name))}
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13.5px;font-weight:600">${c.name}</div>
-          <div style="font-size:11px;color:var(--mt)">${c.class_group} · In: ${fmtTime(s.checkin_time)} · by ${swName(s.checkin_by)}</div>
-          ${s.belongings?`<div style="font-size:11px;color:var(--amb)">${ic('shopping-bag',11)} ${s.belongings}</div>`:''}
-        </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
-          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
-          <span class="badge bg">${ic('check',12)} In</span>
-          ${s.parent_absent?`<span style="font-size:10px;background:var(--ambl);color:var(--amb);padding:1px 6px;border-radius:10px;white-space:nowrap">Parent away</span>`:''}
-        </div>
-          ${durBadge(s.checkin_time)}
-        </div>
-      </div>`;
-    }).join('')}</div>`:''}
-  ${ag.length>0?`<div class="card"><div class="card-ttl">By class group</div>
-    ${ag.map(g=>`<div class="li"><div style="flex:1;font-size:13.5px">${g}</div>
-      <span class="badge bg" style="margin-right:4px">${byG[g].in} in</span>
-      <span class="badge bgold">${byG[g].tot} total</span></div>`).join('')}</div>`:''}
-  <!-- REPORTS & EXPORT — collapsible -->
-  <div class="card" style="margin-bottom:10px;cursor:pointer" onclick="toggleReports()">
-    <div style="display:flex;align-items:center;justify-content:space-between">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span style="font-size:18px">📊</span>
-        <div>
-          <div style="font-weight:600;font-size:14px">Reports &amp; Export</div>
-          <div style="font-size:11.5px;color:var(--ht)">Tap to expand · CSV / Excel formats</div>
-        </div>
-      </div>
-      <span id="rep-chevron" style="font-size:18px;color:var(--ht);transition:transform .2s">${S.reportsOpen?'▲':'▼'}</span>
-    </div>
-    <div id="rep-body" style="display:${S.reportsOpen?'block':'none'};margin-top:14px" onclick="event.stopPropagation()">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-        <button class="btn bo bsm" onclick="exportCSV('today')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
-          <span style="font-size:17px">📋</span>
-          <span style="font-weight:600;font-size:12px">Today</span>
-          <span style="font-size:10px;color:var(--ht)">Attendance log</span>
-        </button>
-        <button class="btn bo bsm" onclick="exportCSV('all')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
-          <span style="font-size:17px">📁</span>
-          <span style="font-weight:600;font-size:12px">All Sessions</span>
-          <span style="font-size:10px;color:var(--ht)">Full history</span>
-        </button>
-        <button class="btn bo bsm" onclick="exportCSV('children')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
-          <span style="font-size:17px">👶</span>
-          <span style="font-weight:600;font-size:12px">Children</span>
-          <span style="font-size:10px;color:var(--ht)">All profiles</span>
-        </button>
-        <button class="btn bo bsm" onclick="exportCSV('parents')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
-          <span style="font-size:17px">👨‍👩‍👧</span>
-          <span style="font-weight:600;font-size:12px">Parents</span>
-          <span style="font-size:10px;color:var(--ht)">All profiles</span>
-        </button>
-      </div>
-      <button class="btn bp bfl" onclick="exportCSV('summary')" style="font-size:13px">
-        📈 Weekly Summary Report
-      </button>
-    </div>
-  </div>
-
-  <div class="card"><div class="card-ttl">Today's log</div>
-    ${ts.length===0?`<div style="padding:16px;text-align:center;color:var(--ht);font-size:13px">No activity yet today</div>`:''}
-    ${[...ts].reverse().map(s=>{
-      const c=C.children.find(x=>x.id===s.child_id);if(!c)return'';const p=parentOf(c.id);
-      return`<div class="li">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13.5px;font-weight:600">${c.name} <span style="font-size:11px;color:var(--ht);font-weight:400">${p?'· '+p.name:''}</span></div>
-          <div style="font-size:11px;color:var(--mt)">In: ${fmtTime(s.checkin_time)} · <b>${swName(s.checkin_by)}</b>${s.checkout_time?` | Out: ${fmtTime(s.checkout_time)} · <b>${swName(s.checkout_by)}</b>`:''}</div>
-          ${s.belongings?`<div style="font-size:11px;color:var(--amb)">${ic('shopping-bag',11)} ${s.belongings}</div>`:''}
-        </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
-          ${s.checkout_time?`<span class="badge ba">Out</span>`:`<span class="badge bg">In</span>`}
-          <code style="font-size:10px;background:#f5f5f0;padding:1px 5px;border-radius:4px">${s.code}</code>
-        </div>
-      </div>`;
-    }).join('')}
-  </div>`;
-}
-
-/* ══ MODAL ══ */
-function bModal(){
-  const m=S.modal;
-  if(m.type==='ci'){
-    const c=C.children.find(x=>x.id===m.cid);if(!c)return'';
-    const cl=col(hue(c.name));const p=parentOf(c.id);const sess=openSess(c.id);
-    if(m.step==='confirm'){
-      const auths=[p?.name,p?.auth2,p?.auth3].filter(Boolean);
-      return`<div class="mb" onclick="if(event.target===this)cM()"><div class="modal">
-        <span class="mh"></span>
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-          ${photoAv(c.name,c.photo_url,52,hue(c.name))}
-          <div><div style="font-size:17px;font-weight:600">${c.name}</div>
-            <div style="font-size:13px;color:var(--mt)">${c.class_group}</div>
-            ${p?`<div style="font-size:12px;color:var(--ht)">${p.name}</div>`:''}
-          </div>
-        </div>
-        ${c.alert_note?`<div class="alert ad">${ic('alert-triangle',18)}<div><b>Alert:</b> ${c.alert_note}</div></div>`:''}
-        ${hasCare(c)?`<div class="care-card">
-          <div class="care-ttl">${ic('pill',14)} Care instructions</div>
-          ${c.medication?`<div class="care-item">${ic('pill',14)}<div><b>Medication:</b> ${c.medication}</div></div>`:''}
-          ${c.feeding_notes?`<div class="care-item">${ic('notes',14)}<div><b>Feeding:</b> ${c.feeding_notes}</div></div>`:''}
-          ${c.care_notes?`<div class="care-item">${ic('heart',14)}<div><b>Notes:</b> ${c.care_notes}</div></div>`:''}
-        </div>`:''}
-        ${sess?`<div class="alert as">${ic('check',18)}<div>Already checked in at ${fmtTime(sess.checkin_time)}</div></div>`:`
-          ${auths.length?`<div style="font-size:13px;color:var(--mt);margin-bottom:8px;line-height:1.6"><b>Authorised pick-up:</b> ${auths.join(', ')}</div>`:''}
-          ${p?.emergency_phone?`<div style="font-size:12px;color:var(--mt);margin-bottom:12px;display:flex;align-items:center;gap:5px">${ic('urgent',13)} Emergency: ${p.emergency_name} — ${p.emergency_phone}</div>`:''}
-          <div style="font-size:13px;font-weight:600;margin-bottom:8px">What did they come with?</div>
-          <div style="margin-bottom:10px">
-            ${BELONGINGS.map((b,i)=>`<div class="cb-row">
-              <input type="checkbox" id="b${i}" ${S.belongings.includes(b)?'checked':''} onchange="toggleB('${b}')">
-              <label for="b${i}">${b}</label>
-            </div>`).join('')}
-          </div>
-          <div class="fg"><label>Other items</label>
-            <input type="text" id="b_oth" value="${S.belongOther}" placeholder="e.g. Special comfort toy" oninput="S.belongOther=this.value">
-          </div>
-           <div class="cb-row" style="margin-bottom:10px">
-             <input type="checkbox" id="absent_parent" ${S.parentAbsent?'checked':''} onchange="S.parentAbsent=this.checked">
-             <label for="absent_parent" style="font-size:13.5px">Parent not present today <span style="color:var(--mt);font-size:12px">(code sent to phone)</span></label>
-           </div>
-          <button class="btn bp bfl" onclick="cfCI('${c.id}')" ${S.saving?'disabled':''}>${S.saving?ic('refresh',16)+' Saving…':ic('circle-check')+' Confirm check-in'}</button>`}
-        <button class="btn bo bfl" style="margin-top:10px" onclick="cM()">Cancel</button>
-      </div></div>`;
-    }
-    if(m.step==='code'){
-      const sess=C.sessions.find(s=>s.id===m.sid);if(!sess)return'';
-      const waMsg=encodeURIComponent(`GLT CHILDREN'S CHURCH\nPickup code for ${c.name}\n\n✅ CODE: ${sess.code}\n\nEnter this FULL code exactly as shown above at the reception desk.\nDate: ${new Date().toLocaleDateString('en-NG')}\n\nGod's Love Tabernacle International Church — Lekki, Lagos`);
-      const smsMsg=`GLT pickup code for ${c.name}: ${sess.code}. Show at reception. God's Love Tabernacle, Lekki.`;
-      return`<div class="mb" onclick="if(event.target===this)cM()"><div class="modal">
-        <span class="mh"></span>
-        <div style="font-size:17px;font-weight:600;margin-bottom:2px">Check-in confirmed!</div>
-        <div style="font-size:12.5px;color:var(--mt);margin-bottom:2px">${c.name} · ${p?p.name:''}</div>
-        <div style="font-size:11.5px;color:var(--ht);margin-bottom:4px">By: ${ME.name} · ${fmtTime(sess.checkin_time)}</div>
-        <div class="code-box">
-          <div class="code-val">${sess.code}</div>
-          <div class="code-hint">Parent's pickup code — valid today only</div>
-        </div>
-        <div style="font-size:13px;color:var(--mt);text-align:center;margin-bottom:10px">Send to parent:</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:14px">
-          ${p?.whatsapp?`<a href="https://wa.me/${p.whatsapp}?text=${waMsg}" target="_blank" class="btn bwa bsm">${ic('brand-whatsapp')} WhatsApp</a>`:''}
-          ${p?.phone?`<a href="sms:${p.phone}?body=${encodeURIComponent(smsMsg)}" class="btn bsms bsm">${ic('device-mobile-message')} SMS</a>`:''}
-          <button class="btn bpr bsm" onclick="pSlip('${sess.id}')">${ic('printer')} Print</button>
-        </div>
-        <div class="div"></div>
-        <button class="btn bp bfl" onclick="cM();S.q='';S.belongings=[];S.belongOther='';S.parentAbsent=false;render()">${ic('check')} Done — next child</button>
-      </div></div>`;
-    }
-  }
-  if(m.type==='viewchild'){
-    const c=C.children.find(x=>x.id===m.cid);if(!c)return'';
-    const cl=col(hue(c.name));const p=parentOf(c.id);const sess=openSess(c.id);
-    return`<div class="mb" onclick="if(event.target===this)cM()"><div class="modal">
-      <span class="mh"></span>
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-        ${photoAv(c.name,c.photo_url,52,hue(c.name))}
-        <div><div style="font-size:17px;font-weight:600">${c.name}</div>
-          <div style="font-size:13px;color:var(--mt)">${c.class_group} · Age ${c.age}</div>
-          ${p?`<div style="font-size:12px;color:var(--ht)">${p.name}</div>`:''}
-        </div>
-      </div>
-      ${c.alert_note?`<div class="alert ad">${ic('alert-triangle',18)}<div><b>Alert:</b> ${c.alert_note}</div></div>`:''}
-      ${sess?`<div class="alert as">${ic('check',18)}<div>Currently inside · In at ${fmtTime(sess.checkin_time)}${sess.belongings?' · '+sess.belongings:''}</div></div>`:''}
-      ${hasCare(c)?`<div class="care-card">
-        <div class="care-ttl">${ic('pill',14)} Care instructions</div>
-        ${c.medication?`<div class="care-item">${ic('pill',14)}<div><b>Medication:</b> ${c.medication}</div></div>`:''}
-        ${c.feeding_notes?`<div class="care-item">${ic('notes',14)}<div><b>Feeding:</b> ${c.feeding_notes}</div></div>`:''}
-        ${c.care_notes?`<div class="care-item">${ic('heart',14)}<div><b>Notes:</b> ${c.care_notes}</div></div>`:''}
-      </div>`:`<div style="font-size:13px;color:var(--ht);text-align:center;padding:12px">No care instructions on file</div>`}
-      ${p?`<div style="margin-top:12px;padding:12px;background:#f9fdf9;border-radius:8px;font-size:13px">
-        <div style="font-weight:600;margin-bottom:6px">${ic('phone',13)} Parent</div>
-        <div style="color:var(--mt)">${p.name} · ${p.phone}</div>
-        ${p.emergency_name?`<div style="color:var(--mt);margin-top:4px">${ic('urgent',12)} Emergency: ${p.emergency_name} — ${p.emergency_phone}</div>`:''}
-        ${p.auth2?`<div style="color:var(--mt);margin-top:4px">${ic('user-check',12)} Also: ${p.auth2}${p.auth3?', '+p.auth3:''}</div>`:''}
-      </div>`:''}
-      <button class="btn bo bfl" onclick="cM()" style="margin-top:14px">Close</button>
-    </div></div>`;
-  }
-  return'';
-}
-
-/* ══ ACTIONS ══ */
-function go(t){S.tab=t;S.modal=null;S.coResult=null;S.cForm=false;S.pForm=false;S.swForm=false;S.clForm=false;S.tmplForm=false;S.eCid=null;S.ePid=null;S.eSwId=null;S.eClId=null;S.eTmplId=null;S.pq='';S.swq='';S.cpMode=false;render();}
-function toggleB(b){S.belongings=Array.isArray(S.belongings)?S.belongings.includes(b)?S.belongings.filter(x=>x!==b):[...S.belongings,b]:[];}
-function oCI(id){S.modal={type:'ci',cid:id,step:'confirm'};S.belongings=[];S.belongOther='';render();}
-function viewChild(id){S.modal={type:'viewchild',cid:id};render();}
-function cM(){S.modal=null;render();}
-
-async function cfCI(cid){
-  S.saving=true;render();
-  try{
-    const bAll=[...S.belongings,S.belongOther].filter(Boolean).join(', ');
-    const code=genCode();
-    const rows=await db.addSession({child_id:cid,code,checkin_time:new Date().toISOString(),checkout_time:null,checkin_by:ME.id,checkout_by:null,belongings:bAll||null,parent_absent:S.parentAbsent||false});
-    const sess=Array.isArray(rows)?rows[0]:rows;
-    C.sessions.unshift(sess);
-    S.saving=false;S.modal={type:'ci',cid,step:'code',sid:sess.id};render();
-  }catch(e){S.saving=false;toast('Check-in failed: '+e.message);render();}
-}
-
-async function doCO(){
-  const raw=S.coCode.trim().toUpperCase().replace(/[^A-Z0-9]/g,''); // strip all non-alphanumeric
-  if(!raw){toast('Please enter a pickup code');return;}
-  // Match flexibly: stored as GLT-XXX-XXXX, accept with/without GLT prefix, with/without dashes
-  const sess=C.sessions.find(s=>{
-    if(!s.code||s.checkout_time)return false;
-    if(new Date(s.checkin_time).toDateString()!==today())return false;
-    const stored=s.code.replace(/[^A-Z0-9]/g,''); // strip dashes from stored code
-    // Match: full code, or code without GLT prefix
-    return stored===raw || stored.replace(/^GLT/,'')===raw || raw===stored.replace(/^GLT/,'');
-  });
-  if(!sess){S.coResult={error:'Code not found. Check the code on the parent\'s slip and try again.'};render();return;}
-  S.saving=true;render();
-  try{
-    const t=new Date().toISOString();
-    await db.updSession(sess.id,{checkout_time:t,checkout_by:ME.id});
-    sess.checkout_time=t;sess.checkout_by=ME.id;
-    S.coResult={cid:sess.child_id,sid:sess.id};S.coCode='';S.saving=false;render();
-  }catch(e){S.saving=false;toast('Checkout failed: '+e.message);render();}
-}
-
-function oCR(){S.cForm=true;S.eCid=null;S.nc={name:S.q||'',age:'',group:GROUPS[0],parent_id:'',alert_note:'',medication:'',feeding_notes:'',care_notes:''};S.tab='children';render();}
-function oAC(pid){S.cForm=true;S.eCid=null;S.nc={name:'',age:'',group:GROUPS[0],parent_id:pid,alert_note:'',medication:'',feeding_notes:'',care_notes:''};S.tab='children';render();}
-function oCE(id){S.eCid=id;S.cForm=true;render();}
-function cCF(){S.cForm=false;S.eCid=null;render();}
-
-async function sC(){
-  const g=id=>document.getElementById(id)?.value?.trim()||'';
-  const name=g('f_cn'),age=g('f_ca'),class_group=g('f_cg'),parent_id=g('f_cpid'),alert_note=g('f_cal');
-  const medication=g('f_med'),feeding_notes=g('f_feed'),care_notes=g('f_care');
-  if(!name||!age||!parent_id){toast('Name, age and parent are required');return;}
-  S.saving=true;render();
-  try{
-    const data={name,age,class_group,parent_id,alert_note,medication,feeding_notes,care_notes};
-    if(S.eCid){
-      await db.updChild(S.eCid,data);
-      const idx=C.children.findIndex(c=>c.id===S.eCid);
-      if(idx>=0)C.children[idx]={...C.children[idx],...data};
-    }else{
-      const rows=await db.addChild(data);C.children.push(Array.isArray(rows)?rows[0]:rows);
-    }
-    S.saving=false;S.cForm=false;S.eCid=null;toast(S.eCid?'Child updated':'Child registered');render();
-  }catch(e){S.saving=false;toast('Save failed: '+e.message);render();}
-}
-
-async function dC(id){
-  const c=C.children.find(x=>x.id===id);
-  if(!confirm('Remove '+c.name+'?'))return;
-  try{await db.delChild(id);C.children=C.children.filter(x=>x.id!==id);toast('Removed');render();}
-  catch(e){toast('Failed: '+e.message);}
-}
-
-function oPR(){S.pForm=true;S.ePid=null;S.np={name:'',phone:'',whatsapp:'',email:'',emergency_phone:'',emergency_name:'',auth2:'',auth3:''};render();}
-function oPE(id){S.ePid=id;S.pForm=true;render();}
-function cPF(){S.pForm=false;S.ePid=null;render();}
-
-async function sP(){
-  const g=id=>document.getElementById(id)?.value?.trim()||'';
-  const name=g('f_pn'),phone=g('f_pp');
-  if(!name||!phone){toast('Name and phone required');return;}
-  const data={name,phone,whatsapp:g('f_pw'),email:g('f_pe'),emergency_phone:g('f_pep'),emergency_name:g('f_pen'),auth2:g('f_pa2'),auth3:g('f_pa3')};
-  S.saving=true;render();
-  try{
-    if(S.ePid){
-      await db.updParent(S.ePid,data);
-      const idx=C.parents.findIndex(p=>p.id===S.ePid);
-      if(idx>=0)C.parents[idx]={...C.parents[idx],...data};
-    }else{
-      const rows=await db.addParent(data);C.parents.push(Array.isArray(rows)?rows[0]:rows);
-    }
-    S.saving=false;S.pForm=false;S.ePid=null;toast(S.ePid?'Parent updated':'Parent registered');render();
-  }catch(e){S.saving=false;toast('Save failed: '+e.message);render();}
-}
-
-async function dP(id){
-  const p=C.parents.find(x=>x.id===id);const kids=kidsOf(id);
-  if(kids.length>0){alert('Cannot delete '+p.name+' — '+kids.length+' child'+(kids.length!==1?'ren':'')+' still linked.');return;}
-  if(!confirm('Remove '+p.name+'?'))return;
-  try{await db.delParent(id);C.parents=C.parents.filter(x=>x.id!==id);toast('Removed');render();}
-  catch(e){toast('Failed: '+e.message);}
-}
-
-function oSWR(){S.swForm=true;S.eSwId=null;S.nsw={name:'',username:'',password:'',role:'steward',phone:'',email:'',address:'',emergency_contact:'',emergency_phone:''};render();}
-function oSWE(id){S.eSwId=id;S.swForm=true;render();}
-function cSWF(){S.swForm=false;S.eSwId=null;render();}
-
-async function sSW(){
-  const g=id=>document.getElementById(id)?.value?.trim()||'';
-  const name=g('sw_name'),uname=g('sw_uname').toLowerCase(),pass=g('sw_pass');
-  const role=document.getElementById('sw_role')?.value||'steward';
-  if(!name){toast('Name is required');return;}
-  if(!uname){toast('Username is required');return;}
-  if(uname.includes(' ')){toast('Username cannot contain spaces');return;}
-  if(!S.eSwId&&!pass){toast('Password is required for new accounts');return;}
-  if(pass&&pass.length<6){toast('Password must be at least 6 characters');return;}
-  // Check username uniqueness
-  const conflict=C.stewards.find(s=>s.username?.toLowerCase()===uname&&s.id!==S.eSwId);
-  if(conflict){toast('Username "'+uname+'" is already taken');return;}
-  S.saving=true;render();
-  try{
-    const data={name,username:uname,role,phone:g('sw_phone'),email:g('sw_email'),address:g('sw_addr'),emergency_contact:g('sw_ec'),emergency_phone:g('sw_ep')};
-    if(pass)data.password=pass;
-    if(S.eSwId){
-      await db.updSteward(S.eSwId,data);
-      const idx=C.stewards.findIndex(s=>s.id===S.eSwId);
-      if(idx>=0)C.stewards[idx]={...C.stewards[idx],...data};
-      if(S.eSwId===ME?.id){Object.assign(ME,data);sessionStorage.setItem('glt_me',JSON.stringify(ME));}
-    }else{
-      const rows=await db.addSteward({...data,is_active:true});
-      C.stewards.push(Array.isArray(rows)?rows[0]:rows);
-    }
-    S.saving=false;S.swForm=false;S.eSwId=null;
-    toast(S.eSwId?'Account updated':'Account created — they can now sign in with username: '+uname);render();
-  }catch(e){S.saving=false;toast('Save failed: '+e.message);render();}
-}
-
-async function dSW(id){
-  const s=C.stewards.find(x=>x.id===id);
-  if(s.role==='superadmin'){toast('Super Admin cannot be deleted');return;}
-  if(!confirm('Remove '+s.name+'?'))return;
-  try{await db.delSteward(id);C.stewards=C.stewards.filter(x=>x.id!==id);toast('Removed');render();}
-  catch(e){toast('Failed: '+e.message);}
-}
-
-function pSlip(sid){
-  const s=C.sessions.find(x=>x.id===sid);if(!s)return;
-  const c=C.children.find(x=>x.id===s.child_id);const p=parentOf(c?.id);
-  const w=window.open('','_blank','width=340,height=520');
-  if(!w){toast('Allow pop-ups to print');return;}
-  w.document.write(`<html><head><title>GLT Pickup Slip</title></head>
-  <body style="font-family:Arial,sans-serif;padding:20px;text-align:center">
-    <div style="border:2px solid #1a6b2e;padding:16px;border-radius:8px;max-width:280px;margin:0 auto">
-      <div style="font-size:10px;font-weight:bold;color:#1a6b2e;letter-spacing:1px">GOD'S LOVE TABERNACLE INTERNATIONAL CHURCH</div>
-      <div style="font-size:9px;color:#5c6b5c;margin-bottom:12px">Children's Church · Secure Pickup Slip</div>
-      <hr style="border-color:#d8e4d0;margin-bottom:12px">
-      <table style="width:100%;font-size:11px;text-align:left;border-collapse:collapse">
-        <tr><td style="color:#5c6b5c;padding:3px 0;width:70px">Child</td><td style="font-weight:bold">${c?.name||''}</td></tr>
-        <tr><td style="color:#5c6b5c;padding:3px 0">Class</td><td>${c?.class_group||''}</td></tr>
-        ${p?`<tr><td style="color:#5c6b5c;padding:3px 0">Parent</td><td>${p.name}</td></tr>`:''}
-        <tr><td style="color:#5c6b5c;padding:3px 0">Check-in</td><td>${new Date(s.checkin_time).toLocaleTimeString('en-NG',{hour:'2-digit',minute:'2-digit'})} · ${new Date(s.checkin_time).toLocaleDateString('en-NG')}</td></tr>
-        ${s.belongings?`<tr><td style="color:#5c6b5c;padding:3px 0">Came with</td><td>${s.belongings}</td></tr>`:''}
-        <tr><td style="color:#5c6b5c;padding:3px 0">Checked by</td><td>${swName(s.checkin_by)}</td></tr>
-      </table>
-      <hr style="border-color:#d8e4d0;margin:12px 0 8px">
-      <div style="font-size:9px;color:#8a9a8a;margin-bottom:6px;letter-spacing:1px">PICKUP CODE</div>
-      <div style="font-size:30px;font-weight:800;letter-spacing:6px;color:#1a6b2e;font-family:Courier,monospace;background:#e4f4ea;padding:10px;border-radius:6px">${s.code}</div>
-      <div style="font-size:9px;color:#5c6b5c;margin-top:10px;line-height:1.5">Present at reception to collect your child.<br>Valid today only · God's Love Tabernacle, Lekki</div>
-    </div>
-    <script>window.print();window.close()<\/script>
-  </body></html>`);
-}
-
-function attachEv(){
-  if(!S.modal&&S.tab==='checkin'){
-    const i=document.getElementById('sInp');
-    if(i&&document.activeElement!==i)i.focus();
-  }
-}
-
-
 
 /* ══ PHOTO SYSTEM ══ */
 async function compressImage(file, maxKB=60){
@@ -1413,141 +1022,530 @@ function photoAv(name, photoUrl, size=44, colorIndex=0){
   return `<div class="av" style="width:${size}px;height:${size}px;background:${cl.bg};color:${cl.fg};font-size:${fs}px;flex-shrink:0">${ini(name)}</div>`;
 }
 
-/* ══ EXPORT / REPORTS ══ */
+
+
+/* ══════════════════════════════════════════════════════════
+   CHURCH SESSION SYSTEM
+══════════════════════════════════════════════════════════ */
+const PROGRAM_TYPES = [
+  {id:'sunday_1st',  label:'Sunday 1st Service'},
+  {id:'sunday_2nd',  label:'Sunday 2nd Service'},
+  {id:'bible_study', label:'Bible Study'},
+  {id:'youth',       label:'Youth Service'},
+  {id:'special',     label:'Special Program'},
+];
+
+function progLabel(type, customName){
+  const p = PROGRAM_TYPES.find(x=>x.id===type);
+  return (type==='special'&&customName) ? customName : (p?.label||type||'Service');
+}
+
+// Church session state
+let activeChurchSession = null; // the open church_sessions row
+
+async function loadChurchSession(){
+  try{
+    const rows = await sbQ('church_sessions?status=eq.open&order=opened_at.desc&limit=1');
+    activeChurchSession = rows.length>0 ? rows[0] : null;
+  }catch(e){ activeChurchSession = null; }
+}
+
+// ── DB methods for church sessions ──
+const dbSess = {
+  open:  d => sbQ('church_sessions',{method:'POST',body:JSON.stringify(d)}),
+  close: id=> sbQ(`church_sessions?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({status:'closed',closed_at:new Date().toISOString()})}),
+  list:  ()=> sbQ('church_sessions?order=opened_at.desc&limit=50'),
+};
+
+// Extend loadAll to also load church session
+const _origLoadAll = loadAll;
+async function loadAll(silent=false){
+  await Promise.all([_origLoadAll(silent), loadChurchSession()]);
+}
+
+/* ══════════════════════════════════════════════════════════
+   SESSION MANAGER — inline card shown at top of check-in
+══════════════════════════════════════════════════════════ */
+let S_sess = {openForm:false,ptype:'sunday_1st',pname:'',pnotes:'',saving:false,histOpen:false,history:[]};
+
+function bSessionBanner(){
+  if(S_sess.openForm) return bSessionOpenForm();
+  if(!activeChurchSession){
+    return`<div class="card" style="border:2px dashed var(--amber);background:var(--ambl);margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:28px">📋</span>
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14.5px;color:var(--amb)">No session open</div>
+          <div style="font-size:12.5px;color:var(--amt,#7a4f00);margin-top:2px">An Admin must open a session before children can be checked in</div>
+        </div>
+        ${isAdm()?`<button class="btn bp bsm" onclick="S_sess.openForm=true;render()">${ic('circle-plus')} Open session</button>`:''}
+      </div>
+    </div>`;
+  }
+  const dur = Math.floor((Date.now()-new Date(activeChurchSession.opened_at))/60000);
+  const todayCI = todaySess().filter(s=>s.church_session_id===activeChurchSession.id);
+  const inside  = todayCI.filter(s=>!s.checkout_time).length;
+  return`<div class="card" style="border-left:4px solid var(--g);background:var(--gl);margin-bottom:10px;padding:12px 14px">
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <span style="font-size:22px">🟢</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:15px;color:var(--gd)">${progLabel(activeChurchSession.program_type,activeChurchSession.custom_name)}</div>
+        <div style="font-size:12px;color:var(--mt);margin-top:2px">
+          ${new Date(activeChurchSession.opened_at).toLocaleDateString('en-NG',{weekday:'long',day:'numeric',month:'long'})}
+          · Open ${dur}min · <b>${todayCI.length}</b> checked in · <b>${inside}</b> inside
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        ${isAdm()?`<button class="btn bd bxs" onclick="doCloseSession()">${ic('circle-minus',14)} Close</button>`:''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function bSessionOpenForm(){
+  return`<div class="card" style="margin-bottom:10px;border:2px solid var(--g)">
+    <div style="font-size:15px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px">
+      ${ic('circle-plus',18)} Open new session
+    </div>
+    <div class="fg"><label>Date</label>
+      <input type="date" id="sess_date" value="${new Date().toISOString().slice(0,10)}">
+    </div>
+    <div class="fg"><label>Program *</label>
+      <select id="sess_type" onchange="S_sess.ptype=this.value;render()">
+        ${PROGRAM_TYPES.map(p=>`<option value="${p.id}" ${S_sess.ptype===p.id?'selected':''}>${p.label}</option>`).join('')}
+      </select>
+    </div>
+    ${S_sess.ptype==='special'?`<div class="fg"><label>Program name *</label>
+      <input type="text" id="sess_name" value="${S_sess.pname}" placeholder="e.g. Christmas Carol Service" oninput="S_sess.pname=this.value">
+    </div>`:''}
+    <div class="fg"><label>Notes (optional)</label>
+      <input type="text" id="sess_notes" value="${S_sess.pnotes}" placeholder="e.g. Combined service with adults" oninput="S_sess.pnotes=this.value">
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn bp bfl" style="flex:1" onclick="doOpenSession()" ${S_sess.saving?'disabled':''}>${S_sess.saving?ic('refresh',16)+' Opening…':ic('circle-check')+' Open session'}</button>
+      <button class="btn bo" onclick="S_sess.openForm=false;render()">Cancel</button>
+    </div>
+  </div>`;
+}
+
+async function doOpenSession(){
+  if(activeChurchSession){toast('A session is already open. Close it first.');return;}
+  const g = id=>document.getElementById(id)?.value?.trim()||'';
+  const type=g('sess_type')||S_sess.ptype;
+  const cname=g('sess_name')||S_sess.pname;
+  if(type==='special'&&!cname){toast('Please enter the program name');return;}
+  S_sess.saving=true; render();
+  try{
+    const rows = await dbSess.open({
+      date: g('sess_date')||new Date().toISOString().slice(0,10),
+      program_type: type,
+      custom_name: cname||null,
+      notes: g('sess_notes')||null,
+      opened_by: ME.id,
+      opened_at: new Date().toISOString(),
+      status:'open'
+    });
+    activeChurchSession = Array.isArray(rows)?rows[0]:rows;
+    S_sess.openForm=false; S_sess.saving=false;
+    toast('Session opened: '+progLabel(type,cname)); render();
+  }catch(e){ S_sess.saving=false; toast('Failed: '+e.message); render(); }
+}
+
+async function doCloseSession(){
+  if(!activeChurchSession)return;
+  const prog=progLabel(activeChurchSession.program_type,activeChurchSession.custom_name);
+  const total=todaySess().filter(s=>s.church_session_id===activeChurchSession.id).length;
+  if(!confirm(`Close "${prog}"?\n\n${total} children were checked in this session.`))return;
+  try{
+    await dbSess.close(activeChurchSession.id);
+    activeChurchSession=null;
+    toast('Session closed'); render();
+  }catch(e){ toast('Failed: '+e.message); }
+}
+
+/* ══════════════════════════════════════════════════════════
+   PATCH cfCI to attach church_session_id
+══════════════════════════════════════════════════════════ */
+const _origCfCI = cfCI;
+async function cfCI(cid){
+  if(!activeChurchSession){
+    toast('No session open. Ask your Admin to open a session first.'); return;
+  }
+  // Temporarily patch the addSession call
+  const origAdd = db.addSession;
+  db.addSession = d => origAdd({...d, church_session_id: activeChurchSession.id});
+  await _origCfCI(cid);
+  db.addSession = origAdd;
+}
+
+/* ══════════════════════════════════════════════════════════
+   REBUILT DASHBOARD
+══════════════════════════════════════════════════════════ */
+function bDB(){
+  const ts=todaySess();
+  const ins=inside();
+  const out=ts.filter(s=>s.checkout_time).length;
+  const totalReg=C.children.length;
+  const attRate=totalReg>0?Math.round(ts.length/totalReg*100):0;
+
+  // Absent today
+  const absentToday=C.children.filter(c=>!ts.some(s=>s.child_id===c.id));
+  // 3-week absentees
+  const absent3=C.children.filter(c=>{
+    const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+    return !last||Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000))>=3;
+  });
+  // Children with medical alerts currently inside
+  const medInside=ts.filter(s=>!s.checkout_time).map(s=>C.children.find(c=>c.id===s.child_id)).filter(c=>c&&c.alert_note);
+  // Class breakdown
+  const byG={};
+  GROUPS.forEach(g=>{byG[g]={in:0,tot:0,cap:0}});
+  ts.forEach(s=>{const c=C.children.find(x=>x.id===s.child_id);if(c){byG[c.class_group].tot++;if(!s.checkout_time)byG[c.class_group].in++;}});
+  C.classes.forEach(cl=>{if(byG[cl.class_group])byG[cl.class_group].cap=Math.max(byG[cl.class_group].cap,cl.capacity||30);});
+  const ag=GROUPS.filter(g=>byG[g].tot>0||C.children.some(c=>c.class_group===g));
+
+  // Attendance trend — last 8 sessions
+  const sessionHistory = buildSessionHistory();
+
+  return`
+  ${bSessionBanner()}
+
+  <!-- KPI GRID -->
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+    <div class="stat"><div class="stat-n" style="color:var(--g)">${ins}</div><div class="stat-l">Inside now</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--blu)">${ts.length}</div><div class="stat-l">Checked in</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--mt)">${out}</div><div class="stat-l">Released</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--pur)">${attRate}%</div><div class="stat-l">Attendance rate</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--red)">${absentToday.length}</div><div class="stat-l">Absent today</div></div>
+    <div class="stat"><div class="stat-n" style="color:var(--amb)">${absent3.length}</div><div class="stat-l">3-wk absent</div></div>
+  </div>
+
+  <!-- PASTORAL ALERTS -->
+  ${medInside.length>0?`<div class="card" style="border-left:4px solid var(--red);margin-bottom:10px">
+    <div class="card-ttl" style="color:var(--red)">${ic('alert-triangle',14)} Medical alerts — children currently inside</div>
+    ${medInside.map(c=>`<div class="li">
+      ${photoAv(c.name,c.photo_url,32,hue(c.name))}
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13.5px;font-weight:600">${c.name}</div>
+        <div style="font-size:11.5px;color:var(--red)">${c.alert_note}</div>
+      </div>
+    </div>`).join('')}
+  </div>`:''}
+
+  ${absent3.length>0?`<div class="card" style="border-left:4px solid var(--amb);margin-bottom:10px">
+    <div class="card-ttl" style="color:var(--amb)">${ic('alert-triangle',14)} Needs pastoral follow-up (3+ week absentees)</div>
+    ${absent3.slice(0,5).map(c=>{
+      const p=parentOf(c.id);
+      const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+      const weeks=last?Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000)):null;
+      const waMsg=encodeURIComponent(`Dear ${p?.name||'Parent'}, we have missed ${c.name} in Children\'s Church${weeks?' for '+weeks+' weeks':''}. We hope all is well. God bless — GLT Children\'s Church 🙏`);
+      return`<div class="li">
+        ${photoAv(c.name,c.photo_url,32,hue(c.name))}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600">${c.name} <span style="font-size:10.5px;color:var(--amb);font-weight:400">${weeks?weeks+'wk absent':'Never attended'}</span></div>
+          <div style="font-size:11px;color:var(--mt)">${c.class_group}${p?' · '+p.name:''}</div>
+        </div>
+        ${p?.whatsapp?`<a href="https://wa.me/${p.whatsapp}?text=${waMsg}" target="_blank" class="btn bwa bxs">${ic('brand-whatsapp',13)}</a>`:''}
+      </div>`;
+    }).join('')}
+    ${absent3.length>5?`<div style="text-align:center;margin-top:8px"><button class="btn bo bsm" onclick="go('comms');S.commTab='followup'">${ic('users')} See all ${absent3.length} in Comms</button></div>`:''}
+  </div>`:''}
+
+  <!-- ATTENDANCE TREND -->
+  ${sessionHistory.length>0?`<div class="card" style="margin-bottom:10px">
+    <div class="card-ttl">Attendance trend — last sessions</div>
+    <div style="display:flex;align-items:flex-end;gap:4px;height:60px;padding:0 4px">
+      ${sessionHistory.map(s=>{
+        const pct=totalReg>0?Math.round(s.count/totalReg*100):0;
+        const h=Math.max(8,Math.round(pct*0.55));
+        return`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">
+          <div style="font-size:9px;color:var(--ht)">${s.count}</div>
+          <div style="width:100%;background:${pct>=70?'var(--g)':pct>=40?'var(--gm)':'var(--ambl)'};border-radius:3px 3px 0 0;height:${h}px;min-height:4px"></div>
+          <div style="font-size:8.5px;color:var(--ht);text-align:center;white-space:nowrap;overflow:hidden;width:100%;text-overflow:ellipsis">${s.label}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`:''}
+
+  <!-- CLASS BREAKDOWN -->
+  ${ag.length>0?`<div class="card" style="margin-bottom:10px">
+    <div class="card-ttl">Class attendance today</div>
+    ${ag.map(g=>{
+      const cl=C.classes.find(x=>x.class_group===g);
+      const cap=cl?.capacity||byG[g].tot||1;
+      const pct=Math.round(byG[g].tot/Math.max(cap,byG[g].tot)*100);
+      return`<div style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <div style="font-size:13px;font-weight:500">${cl?cl.name:g}</div>
+          <div style="font-size:12px;color:var(--mt)">${byG[g].in} inside · ${byG[g].tot} today${cl?' / '+cl.capacity+' cap':''}</div>
+        </div>
+        <div style="background:#e8e8e8;border-radius:4px;height:6px;overflow:hidden">
+          <div style="height:100%;background:${pct>=80?'var(--g)':pct>=50?'var(--gm)':'var(--ambl)'};border-radius:4px;width:${Math.min(100,pct)}%;transition:width .3s"></div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`:''}
+
+  <!-- ACTIVITY FEED -->
+  <div class="card" style="margin-bottom:10px">
+    <div class="card-ttl" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Recent activity</span>
+      <span style="font-size:10px;color:var(--ht);font-weight:400">${ts.length} events today</span>
+    </div>
+    ${(()=>{
+      const recent=[...ts].slice(0,6);
+      if(recent.length===0)return`<div style="font-size:13px;color:var(--ht);text-align:center;padding:12px">No activity yet${activeChurchSession?'':' — open a session to begin'}</div>`;
+      return recent.reverse().map(s=>{
+        const c=C.children.find(x=>x.id===s.child_id);if(!c)return'';
+        const isOut=!!s.checkout_time;
+        return`<div class="activity-item">
+          <div class="activity-dot ${isOut?'co':'ci'}"></div>
+          ${photoAv(c.name,c.photo_url,32,hue(c.name))}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600">${c.name}</div>
+            <div style="font-size:11.5px;color:var(--mt)">${isOut?'Checked out':'Checked in'} · ${isOut?fmtTime(s.checkout_time):fmtTime(s.checkin_time)} · ${swName(isOut?s.checkout_by:s.checkin_by)}</div>
+          </div>
+          <span class="badge ${isOut?'ba':'bg'}" style="font-size:10.5px">${isOut?'Out':'In'}</span>
+        </div>`;
+      }).join('');
+    })()}
+  </div>
+
+  <!-- TODAY'S FULL LOG -->
+  <div class="card">
+    <div class="card-ttl" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Today's full log</span>
+      ${activeChurchSession?`<span style="font-size:11px;background:var(--gl);color:var(--gd);padding:2px 8px;border-radius:20px">${progLabel(activeChurchSession.program_type,activeChurchSession.custom_name)}</span>`:''}
+    </div>
+    ${ts.length===0?`<div style="padding:16px;text-align:center;color:var(--ht);font-size:13px">No check-ins yet${activeChurchSession?'':' · No session open'}</div>`:''}
+    ${[...ts].reverse().map(s=>{
+      const c=C.children.find(x=>x.id===s.child_id);if(!c)return'';const p=parentOf(c.id);
+      return`<div class="li">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:600">${c.name} <span style="font-size:11px;color:var(--ht);font-weight:400">${p?'· '+p.name:''}</span></div>
+          <div style="font-size:11px;color:var(--mt)">In: ${fmtTime(s.checkin_time)} · <b>${swName(s.checkin_by)}</b>${s.checkout_time?' | Out: '+fmtTime(s.checkout_time)+' · <b>'+swName(s.checkout_by)+'</b>':''}</div>
+          ${s.parent_absent?`<div style="font-size:10.5px;color:var(--amb)">Parent not present</div>`:''}
+          ${s.belongings?`<div style="font-size:10.5px;color:var(--amt,#7a4f00)">${ic('shopping-bag',11)} ${s.belongings}</div>`:''}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
+          ${s.checkout_time?`<span class="badge ba">Out</span>`:`<span class="badge bg">In</span>`}
+          <code style="font-size:10px;background:#f5f5f0;padding:1px 5px;border-radius:4px">${s.code}</code>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>
+
+  <!-- REPORTS DROPDOWN -->
+  <div class="card" style="margin-bottom:10px;cursor:pointer" onclick="toggleReports()">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:18px">📊</span>
+        <div><div style="font-weight:600;font-size:14px">Reports &amp; Export</div>
+          <div style="font-size:11.5px;color:var(--ht)">Tap to expand · CSV / Excel formats</div></div>
+      </div>
+      <span id="rep-chevron" style="font-size:18px;color:var(--ht)">${S.reportsOpen?'▲':'▼'}</span>
+    </div>
+    <div id="rep-body" style="display:${S.reportsOpen?'block':'none'};margin-top:14px" onclick="event.stopPropagation()">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <button class="btn bo bsm" onclick="exportCSV('today')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
+          <span style="font-size:17px">📋</span><span style="font-weight:600;font-size:12px">Today's Attendance</span><span style="font-size:10px;color:var(--ht)">Current session</span>
+        </button>
+        <button class="btn bo bsm" onclick="exportCSV('sessions')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
+          <span style="font-size:17px">📅</span><span style="font-weight:600;font-size:12px">Session History</span><span style="font-size:10px;color:var(--ht)">All services</span>
+        </button>
+        <button class="btn bo bsm" onclick="exportCSV('absentees')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
+          <span style="font-size:17px">🔴</span><span style="font-weight:600;font-size:12px">Absentee Report</span><span style="font-size:10px;color:var(--ht)">3-week absentees</span>
+        </button>
+        <button class="btn bo bsm" onclick="exportCSV('children')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
+          <span style="font-size:17px">👶</span><span style="font-weight:600;font-size:12px">Children Register</span><span style="font-size:10px;color:var(--ht)">All profiles</span>
+        </button>
+        <button class="btn bo bsm" onclick="exportCSV('stewards')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
+          <span style="font-size:17px">👤</span><span style="font-weight:600;font-size:12px">Steward Activity</span><span style="font-size:10px;color:var(--ht)">Who worked when</span>
+        </button>
+        <button class="btn bo bsm" onclick="exportCSV('parents')" style="flex-direction:column;height:auto;padding:12px 8px;gap:3px">
+          <span style="font-size:17px">👨‍👩‍👧</span><span style="font-weight:600;font-size:12px">Parents Register</span><span style="font-size:10px;color:var(--ht)">All contacts</span>
+        </button>
+      </div>
+      <button class="btn bp bfl" onclick="exportCSV('summary')" style="font-size:13px">
+        📈 Weekly / Monthly Summary Report
+      </button>
+    </div>
+  </div>`;
+}
+
+function buildSessionHistory(){
+  // Group sessions by church_session_id if available, else by date
+  const bySession={};
+  C.sessions.forEach(s=>{
+    const key=s.church_session_id||new Date(s.checkin_time).toDateString();
+    if(!bySession[key]){
+      const csess=C.churchSessions?.find(x=>x.id===s.church_session_id);
+      bySession[key]={
+        label: csess ? shortLabel(csess.program_type,csess.custom_name,csess.date) : new Date(s.checkin_time).toLocaleDateString('en-NG',{day:'numeric',month:'short'}),
+        count:0, date: s.checkin_time
+      };
+    }
+    bySession[key].count++;
+  });
+  return Object.values(bySession)
+    .sort((a,b)=>new Date(a.date)-new Date(b.date))
+    .slice(-8);
+}
+
+function shortLabel(type,cname,date){
+  const d=new Date(date).toLocaleDateString('en-NG',{day:'numeric',month:'short'});
+  const t={sunday_1st:'Sun1',sunday_2nd:'Sun2',bible_study:'Bible',youth:'Youth',special:cname?.slice(0,6)||'Spec'}[type]||type;
+  return t+'\n'+d;
+}
+
+/* ══════════════════════════════════════════════════════════
+   ENHANCED EXPORT / REPORTS
+══════════════════════════════════════════════════════════ */
+function exportCSV(type){
+  const now=new Date();
+  const dateStr=now.toISOString().slice(0,10);
+  const church='God\'s Love Tabernacle International Church — GLT SafePass';
+
+  if(type==='sessions'){
+    // Session history report
+    let out=`GLT SafePass — Session History Report\r\n${church}\r\nGenerated: ${now.toLocaleString('en-NG')}\r\n\r\n`;
+    out+=rowCSV(['Date','Program','Opened By','Opened At','Closed At','Total Check-ins','Unique Children','Released','Still Inside']);
+    // Group checkins by church_session_id
+    const sessMap={};
+    C.sessions.forEach(s=>{
+      const key=s.church_session_id||'unlinked';
+      if(!sessMap[key]){sessMap[key]={total:0,released:0,inside:0,children:new Set()};}
+      sessMap[key].total++;
+      sessMap[key].children.add(s.child_id);
+      if(s.checkout_time)sessMap[key].released++;
+      else sessMap[key].inside++;
+    });
+    // Sort church sessions by date
+    const cSessions=(C.churchSessions||[]).sort((a,b)=>new Date(b.opened_at)-new Date(a.opened_at));
+    cSessions.forEach(cs=>{
+      const data=sessMap[cs.id]||{total:0,released:0,inside:0,children:new Set()};
+      out+=rowCSV([
+        new Date(cs.date).toLocaleDateString('en-NG'),
+        progLabel(cs.program_type,cs.custom_name),
+        swName(cs.opened_by),
+        fmtTime(cs.opened_at),
+        cs.closed_at?fmtTime(cs.closed_at):'Still open',
+        data.total, data.children.size, data.released, data.inside
+      ]);
+    });
+    downloadCSV('GLT_SafePass_SessionHistory_'+dateStr+'.csv',out);
+  }
+
+  else if(type==='absentees'){
+    const absent=C.children.filter(c=>{
+      const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+      return !last||Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000))>=3;
+    });
+    let out=`GLT SafePass — Absentee Report (3+ Weeks)\r\n${church}\r\nGenerated: ${now.toLocaleString('en-NG')}\r\n\r\n`;
+    out+=rowCSV(['Child Name','Class Group','Parent Name','Phone','WhatsApp','Last Seen','Weeks Absent','Total Visits']);
+    absent.forEach(c=>{
+      const p=parentOf(c.id);
+      const allSess=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time));
+      const last=allSess[0];
+      const weeks=last?Math.floor((Date.now()-new Date(last.checkin_time))/(7*24*60*60*1000)):'Never';
+      out+=rowCSV([c.name,c.class_group,p?.name||'',p?.phone||'',p?.whatsapp||'',
+        last?new Date(last.checkin_time).toLocaleDateString('en-NG'):'Never attended',
+        weeks, allSess.length]);
+    });
+    out+=`\r\nTotal absentees: ${absent.length}\r\n`;
+    downloadCSV('GLT_SafePass_AbsenteeReport_'+dateStr+'.csv',out);
+  }
+
+  else if(type==='stewards'){
+    let out=`GLT SafePass — Steward Activity Report\r\n${church}\r\nGenerated: ${now.toLocaleString('en-NG')}\r\n\r\n`;
+    out+=rowCSV(['Steward Name','Role','Check-ins Performed','Check-outs Performed','Last Active','Sessions Worked']);
+    C.stewards.forEach(sw=>{
+      const cins=C.sessions.filter(s=>s.checkin_by===sw.id).length;
+      const couts=C.sessions.filter(s=>s.checkout_by===sw.id).length;
+      const lastActive=[...C.sessions.filter(s=>s.checkin_by===sw.id||s.checkout_by===sw.id)]
+        .sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+      const sessWorked=new Set(C.sessions.filter(s=>s.checkin_by===sw.id).map(s=>s.church_session_id||new Date(s.checkin_time).toDateString())).size;
+      out+=rowCSV([sw.name,sw.role,cins,couts,
+        lastActive?new Date(lastActive.checkin_time).toLocaleDateString('en-NG'):'Never',sessWorked]);
+    });
+    downloadCSV('GLT_SafePass_StewardActivity_'+dateStr+'.csv',out);
+  }
+
+  else if(type==='today'){
+    const ts=todaySess();
+    const sessLabel=activeChurchSession?progLabel(activeChurchSession.program_type,activeChurchSession.custom_name):'No session';
+    let out=`GLT SafePass — Today's Attendance\r\n${church}\r\n`;
+    out+=`Session: ${sessLabel}\r\nDate: ${now.toLocaleDateString('en-NG',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}\r\nGenerated: ${now.toLocaleString('en-NG')}\r\n\r\n`;
+    out+=rowCSV(['Child Name','Age','Class','Parent','Phone','Check-in','Check-out','Duration (min)','Steward In','Steward Out','Belongings','Parent Absent','Code']);
+    ts.forEach(s=>{
+      const c=C.children.find(x=>x.id===s.child_id);const p=parentOf(s.child_id);
+      const dur=s.checkout_time?Math.round((new Date(s.checkout_time)-new Date(s.checkin_time))/60000):'Still inside';
+      out+=rowCSV([c?.name||'',c?.age||'',c?.class_group||'',p?.name||'',p?.phone||'',
+        fmtTime(s.checkin_time),s.checkout_time?fmtTime(s.checkout_time):'',dur,
+        swName(s.checkin_by),swName(s.checkout_by),s.belongings||'',s.parent_absent?'Yes':'No',s.code]);
+    });
+    out+=`\r\nSUMMARY\r\nTotal checked in:,${ts.length}\r\nStill inside:,${ts.filter(s=>!s.checkout_time).length}\r\nReleased:,${ts.filter(s=>s.checkout_time).length}\r\nAttendance rate:,${C.children.length>0?Math.round(ts.length/C.children.length*100):0}%\r\n`;
+    downloadCSV('GLT_SafePass_Attendance_'+dateStr+'.csv',out);
+  }
+
+  else if(type==='children'){
+    let out=`GLT SafePass — Children Register\r\n${church}\r\nGenerated: ${now.toLocaleString('en-NG')}\r\n\r\n`;
+    out+=rowCSV(['Full Name','Age','Class Group','Parent','Phone','WhatsApp','Email','Auth Person 2','Auth Person 3','Emergency','Emergency Phone','Alert','Medication','Feeding Notes','Total Visits','Last Seen','Registered']);
+    C.children.forEach(c=>{
+      const p=parentOf(c.id);
+      const visits=C.sessions.filter(s=>s.child_id===c.id).length;
+      const last=C.sessions.filter(s=>s.child_id===c.id).sort((a,b)=>new Date(b.checkin_time)-new Date(a.checkin_time))[0];
+      out+=rowCSV([c.name,c.age,c.class_group,p?.name||'',p?.phone||'',p?.whatsapp||'',p?.email||'',
+        p?.auth2||'',p?.auth3||'',p?.emergency_name||'',p?.emergency_phone||'',
+        c.alert_note||'',c.medication||'',c.feeding_notes||'',
+        visits, last?new Date(last.checkin_time).toLocaleDateString('en-NG'):'Never',
+        new Date(c.created_at).toLocaleDateString('en-NG')]);
+    });
+    downloadCSV('GLT_SafePass_ChildrenRegister_'+dateStr+'.csv',out);
+  }
+
+  else if(type==='parents'){
+    let out=`GLT SafePass — Parents Register\r\n${church}\r\nGenerated: ${now.toLocaleString('en-NG')}\r\n\r\n`;
+    out+=rowCSV(['Full Name','Phone','WhatsApp','Email','Emergency Contact','Emergency Phone','Auth Person 2','Auth Person 3','Children','Total Family Visits']);
+    C.parents.forEach(p=>{
+      const kids=kidsOf(p.id);
+      const visits=kids.reduce((sum,c)=>sum+C.sessions.filter(s=>s.child_id===c.id).length,0);
+      out+=rowCSV([p.name,p.phone,p.whatsapp||'',p.email||'',p.emergency_name||'',p.emergency_phone||'',
+        p.auth2||'',p.auth3||'',kids.map(c=>c.name).join('; '),visits]);
+    });
+    downloadCSV('GLT_SafePass_ParentsRegister_'+dateStr+'.csv',out);
+  }
+
+  else if(type==='summary'){
+    const bySession={};
+    C.sessions.forEach(s=>{
+      const key=s.church_session_id||new Date(s.checkin_time).toDateString();
+      if(!bySession[key]){
+        bySession[key]={label:new Date(s.checkin_time).toLocaleDateString('en-NG'),total:0,released:0,classes:{}};
+      }
+      bySession[key].total++;
+      if(s.checkout_time)bySession[key].released++;
+      const c=C.children.find(x=>x.id===s.child_id);
+      if(c){if(!bySession[key].classes[c.class_group])bySession[key].classes[c.class_group]=0;bySession[key].classes[c.class_group]++;}
+    });
+    let out=`GLT SafePass — Attendance Summary Report\r\n${church}\r\nGenerated: ${now.toLocaleString('en-NG')}\r\n\r\n`;
+    out+=rowCSV(['Session / Date','Total','Released','Still Inside','Attendance %',...GROUPS]);
+    Object.values(bySession).reverse().forEach(d=>{
+      const pct=C.children.length>0?Math.round(d.total/C.children.length*100):0;
+      out+=rowCSV([d.label,d.total,d.released,d.total-d.released,pct+'%',...GROUPS.map(g=>d.classes[g]||0)]);
+    });
+    out+=`\r\nGRAND TOTAL\r\nTotal sessions:,${Object.keys(bySession).length}\r\nTotal check-ins:,${C.sessions.length}\r\nChildren registered:,${C.children.length}\r\nParents registered:,${C.parents.length}\r\n`;
+    downloadCSV('GLT_SafePass_SummaryReport_'+dateStr+'.csv',out);
+  }
+}
+
+
 function toggleReports(){
   S.reportsOpen=!S.reportsOpen;
   const body=document.getElementById('rep-body');
   const chev=document.getElementById('rep-chevron');
   if(body)body.style.display=S.reportsOpen?'block':'none';
   if(chev)chev.textContent=S.reportsOpen?'▲':'▼';
-}
-function escCSV(v){
-  if(v==null)return'';
-  v=String(v);
-  if(v.includes(',')||v.includes('"')||v.includes('\n'))return'"'+v.replace(/"/g,'""')+'"';
-  return v;
-}
-function rowCSV(arr){return arr.map(escCSV).join(',')+'\r\n';}
-
-function downloadCSV(filename, rows){
-  const blob=new Blob([rows],{type:'text/csv;charset=utf-8;'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url; a.download=filename; a.style.display='none';
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
-  toast('Downloaded: '+filename);
-}
-
-function exportCSV(type){
-  const now=new Date();
-  const dateStr=now.toISOString().slice(0,10);
-  const churchName='God\'s Love Tabernacle International Church';
-
-  if(type==='today'){
-    const ts=todaySess();
-    let out='GLT SafePass — Attendance Report\r\n';
-    out+=churchName+'\r\n';
-    out+='Date: '+now.toLocaleDateString('en-NG',{weekday:'long',day:'numeric',month:'long',year:'numeric'})+'\r\n';
-    out+='Generated: '+now.toLocaleString('en-NG')+'\r\n\r\n';
-    out+=rowCSV(['Child Name','Age','Class Group','Parent/Guardian','Phone','Check-in Time','Check-out Time','Duration (mins)','Belongings','Checked in by','Checked out by','Pickup Code']);
-    ts.forEach(s=>{
-      const c=C.children.find(x=>x.id===s.child_id);
-      const p=s.child_id?parentOf(s.child_id):null;
-      const dur=s.checkout_time?Math.round((new Date(s.checkout_time)-new Date(s.checkin_time))/60000):'Still inside';
-      out+=rowCSV([
-        c?.name||'',c?.age||'',c?.class_group||'',
-        p?.name||'',p?.phone||'',
-        new Date(s.checkin_time).toLocaleTimeString('en-NG',{hour:'2-digit',minute:'2-digit'}),
-        s.checkout_time?new Date(s.checkout_time).toLocaleTimeString('en-NG',{hour:'2-digit',minute:'2-digit'}):'Not yet collected',
-        dur,s.belongings||'',swName(s.checkin_by),swName(s.checkout_by),s.code
-      ]);
-    });
-    out+='\r\nTOTALS\r\n';
-    out+='Total checked in:,'+ts.length+'\r\n';
-    out+='Still inside:,'+ts.filter(s=>!s.checkout_time).length+'\r\n';
-    out+='Released:,'+ts.filter(s=>s.checkout_time).length+'\r\n';
-    downloadCSV('GLT_SafePass_Attendance_'+dateStr+'.csv',out);
-  }
-
-  else if(type==='all'){
-    let out='GLT SafePass — Complete Sessions Export\r\n';
-    out+=churchName+'\r\n';
-    out+='Generated: '+now.toLocaleString('en-NG')+'\r\n\r\n';
-    out+=rowCSV(['Date','Child Name','Age','Class Group','Parent','Phone','Check-in','Check-out','Duration (mins)','Belongings','Checked in by','Checked out by','Code']);
-    [...C.sessions].reverse().forEach(s=>{
-      const c=C.children.find(x=>x.id===s.child_id);
-      const p=s.child_id?parentOf(s.child_id):null;
-      const cin=new Date(s.checkin_time);
-      const dur=s.checkout_time?Math.round((new Date(s.checkout_time)-cin)/60000):'';
-      out+=rowCSV([
-        cin.toLocaleDateString('en-NG'),c?.name||'',c?.age||'',c?.class_group||'',
-        p?.name||'',p?.phone||'',
-        cin.toLocaleTimeString('en-NG',{hour:'2-digit',minute:'2-digit'}),
-        s.checkout_time?new Date(s.checkout_time).toLocaleTimeString('en-NG',{hour:'2-digit',minute:'2-digit'}):'',
-        dur,s.belongings||'',swName(s.checkin_by),swName(s.checkout_by),s.code
-      ]);
-    });
-    downloadCSV('GLT_SafePass_AllSessions_'+dateStr+'.csv',out);
-  }
-
-  else if(type==='children'){
-    let out='GLT SafePass — Children Register\r\n';
-    out+=churchName+'\r\n';
-    out+='Generated: '+now.toLocaleString('en-NG')+'\r\n\r\n';
-    out+=rowCSV(['Full Name','Age','Class Group','Parent/Guardian','Parent Phone','Parent WhatsApp','Parent Email','Auth Person 2','Auth Person 3','Emergency Contact','Emergency Phone','Medical Alert','Medication','Feeding Notes','Care Notes']);
-    C.children.forEach(c=>{
-      const p=parentOf(c.id);
-      out+=rowCSV([
-        c.name,c.age,c.class_group,
-        p?.name||'',p?.phone||'',p?.whatsapp||'',p?.email||'',
-        p?.auth2||'',p?.auth3||'',
-        p?.emergency_name||'',p?.emergency_phone||'',
-        c.alert_note||'',c.medication||'',c.feeding_notes||'',c.care_notes||''
-      ]);
-    });
-    downloadCSV('GLT_SafePass_ChildrenRegister_'+dateStr+'.csv',out);
-  }
-
-  else if(type==='parents'){
-    let out='GLT SafePass — Parents Register\r\n';
-    out+=churchName+'\r\n';
-    out+='Generated: '+now.toLocaleString('en-NG')+'\r\n\r\n';
-    out+=rowCSV(['Full Name','Phone','WhatsApp','Email','Emergency Contact','Emergency Phone','Auth Person 2','Auth Person 3','Children']);
-    C.parents.forEach(p=>{
-      const kids=kidsOf(p.id).map(c=>c.name).join('; ');
-      out+=rowCSV([p.name,p.phone,p.whatsapp||'',p.email||'',p.emergency_name||'',p.emergency_phone||'',p.auth2||'',p.auth3||'',kids]);
-    });
-    downloadCSV('GLT_SafePass_ParentsRegister_'+dateStr+'.csv',out);
-  }
-
-  else if(type==='summary'){
-    // Weekly summary - group by date
-    const byDate={};
-    C.sessions.forEach(s=>{
-      const d=new Date(s.checkin_time).toLocaleDateString('en-NG');
-      if(!byDate[d])byDate[d]={date:d,total:0,released:0,classes:{}};
-      byDate[d].total++;
-      if(s.checkout_time)byDate[d].released++;
-      const c=C.children.find(x=>x.id===s.child_id);
-      if(c){
-        if(!byDate[d].classes[c.class_group])byDate[d].classes[c.class_group]=0;
-        byDate[d].classes[c.class_group]++;
-      }
-    });
-    let out='GLT SafePass — Weekly Summary Report\r\n';
-    out+=churchName+'\r\n';
-    out+='Generated: '+now.toLocaleString('en-NG')+'\r\n\r\n';
-    out+=rowCSV(['Date','Total Check-ins','Released','Still Inside',...GROUPS]);
-    Object.values(byDate).reverse().forEach(d=>{
-      out+=rowCSV([d.date,d.total,d.released,d.total-d.released,...GROUPS.map(g=>d.classes[g]||0)]);
-    });
-    out+='\r\nGRAND TOTAL\r\n';
-    out+='Total sessions:,'+C.sessions.length+'\r\n';
-    out+='Total children registered:,'+C.children.length+'\r\n';
-    out+='Total parents registered:,'+C.parents.length+'\r\n';
-    downloadCSV('GLT_SafePass_WeeklySummary_'+dateStr+'.csv',out);
-  }
 }
 
 /* ── Launch screen ── */
